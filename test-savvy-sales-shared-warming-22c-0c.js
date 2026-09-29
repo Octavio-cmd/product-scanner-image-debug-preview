@@ -1,25 +1,21 @@
 #!/usr/bin/env node
 /**
- * SAVVY SALES WARMING AUTO-RETRY + SNAPSHOT AGE UI (Implementación #22C-0B3)
+ * ONE SHARED SAVVY SALES WARMING PROBE PER SCAN (Implementación #22C-0C)
  *
- * Backend #22C-0B2 (stale-while-revalidate) answers a cold/too-old snapshot
- * with status=unconfirmed, reason=sales_snapshot_warming, refreshing=true,
- * windows=null — instantly, while ONE background scan runs. This suite proves
- * the Test Preview frontend:
- *  - shows "⏳ Preparando ventas reales… Actualizando automáticamente." (not
- *    "Ventas no confirmadas", never 0) and retries by itself, bounded
- *    (first 2 s, then every 3 s, ≤30 retries and ≤90 s), one loop per scan +
- *    exact SKU, cancelled by a new scan;
- *  - renders the normal #22B table as soon as a confirmed answer arrives, with
- *    a small age note when snapshot_age_seconds is present;
- *  - keeps every other state (errors, backoff, malformed, network) as the
- *    existing "⚠️ Ventas no confirmadas", without auto-retry;
- *  - is byte-for-byte #22B behaviour against the current backend (no metadata).
+ * Backend c503df8: /ebay/savvy-sales = 30 requests / minute / session user;
+ * every exact-SKU read and every warming retry costs one unit. #22C-0B3 ran one
+ * warming loop PER SKU (4 cold SKUs ≈ 84 req/min → http_429 at ~20 s). Now one
+ * gate/probe per scan: the first exact SKU is read alone; if the shared B2
+ * snapshot is warming it is the ONLY poller (2 s, then 3 s, ≤30 retries,
+ * ≤90 s); when it confirms, every other exact SKU is read ONCE.
  *
- * Harness: real multipack-fixes.js + real app.js in a vm sandbox (same as
- * test-inventory-before-savvy-sales-22c-0a.js); only fetch() is mocked. Retry
- * constants are scaled down in the sandbox (after asserting the real values)
- * so the loops run in milliseconds with the REAL scheduling code.
+ * The request-budget checks run the REAL scheduling code on a 1:100 clock
+ * (1 s → 10 ms): B3 timings, a cold snapshot that becomes ready at "50 s", and
+ * a mock of the backend fixed-window limiter (30 per "60 s"). Every sliding
+ * "60 s" window must hold ≤ 30 sales requests and no 429 may occur.
+ *
+ * Harness: real multipack-fixes.js + real app.js in a vm sandbox (same as the
+ * #22C-0B3 suite); only fetch() is mocked.
  */
 const fs = require('fs');
 const vm = require('vm');
@@ -207,7 +203,7 @@ sandbox.window = sandbox; sandbox.self = sandbox; sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 
 const fixesSrc = fs.readFileSync(path.join(__dirname, 'multipack-fixes.js'), 'utf8');
-const appSrc = fs.readFileSync(process.env.PS22C0B3_APP || path.join(__dirname, 'app.js'), 'utf8');
+const appSrc = fs.readFileSync(process.env.PS22C0C_APP || path.join(__dirname, 'app.js'), 'utf8');
 // #22C-0B3 (warming auto-retry + age note) is separately scoped: guards compare
 // app.js with exactly those edits reverted.
 // #22C-0C (one shared warming probe per scan) is separately scoped: revert
@@ -488,203 +484,202 @@ async function start(sales, extra) {
 }
 const idle = () => armed() === 0 && !Object.values(salesState().skus || {}).some(e => e.state === 'loading');
 
+
+// ── #22C-0C helpers ───────────────────────────────────────────────────────
+const S3PK = 'LEG-673419373609-3pk', S6PK = 'LEG-673419373609-6pk';
+const SCALE = 100;                                   // 1 real second → 10 ms
+const SEC = s => Math.round(s * 1000 / SCALE);
+const B3_TIMINGS = () => setWarm(SEC(2), SEC(3), 30, SEC(90), SEC(10));
+// mock of the backend fixed-window limiter (per user, 30 per "60 s")
+let lim = null, salesTimes = [];
+const fetchInner = sandbox.fetch;
+sandbox.fetch = (url, opts) => {
+  const u = String(url);
+  if (u.indexOf('/ebay/savvy-sales') >= 0) {
+    const now = Date.now(); salesTimes.push(now);
+    if (lim) {
+      if (lim.start == null || now - lim.start >= lim.windowMs) { lim.start = now; lim.count = 0; }
+      if (++lim.count > lim.max) {
+        lim.hits++;
+        const sku = decodeURIComponent((u.match(/sku=([^&]+)/) || [])[1] || '');
+        salesCalls.push({ u, method: 'GET', sku, auth: opts && opts.headers && opts.headers.get && opts.headers.get('Authorization'), limited: true });
+        return Promise.resolve({ ok: false, status: 429, json: async () => { throw new SyntaxError('Unexpected token <'); } });
+      }
+    }
+  }
+  return fetchInner(url, opts);
+};
+function limiterOn() { lim = { windowMs: SEC(60), max: 30, start: null, count: 0, hits: 0 }; }
+function maxInWindow(times, win) { let m = 0; for (let i = 0; i < times.length; i++) { let c = 0; for (let j = i; j < times.length && times[j] - times[i] < win; j++) c++; m = Math.max(m, c); } return m; }
+// cold B2 snapshot: warming until `ready.t`, then each exact SKU's OWN confirmed body
+function cold(ready, sku, spec) { return { defer: async () => salesBuild(sku, Date.now() >= ready.t ? spec : W(sku)) }; }
+const Z = sku => ({ mode: 'zero' });
+const OK3 = over => ({ status: 200, body: salesOk(S3PK, 3, win(1, 2, 0.286, 3), win(2, 4, 0.133, 3), win(3, 6, 0.067, 3), over) });
+const OK6 = over => ({ status: 200, body: salesOk(S6PK, 6, win(0, 0, 0, 6), win(1, 1, 0.033, 6), win(2, 2, 0.022, 6), over) });
+const OK12 = over => ({ status: 200, body: salesOk(S12PK, 12, win(0, 0, 0, 12), win(0, 0, 0, 12), win(1, 1, 0.011, 12), over) });
+const EB = skus => skus.map((s, i) => ebL(String(900 + i), s, 3, LEG));
+const allSkus = () => Object.values(salesState().skus || {}).map(e => e.sku);
+const states = () => Object.fromEntries(Object.values(salesState().skus || {}).map(e => [e.sku, e.state]));
+const settled = () => Object.values(salesState().skus || {}).every(e => e.state === 'ok' || e.state === 'error');
+async function coldScan(extraEb, bodies, readyS) {
+  const ready = { t: Infinity };
+  const map = {};
+  Object.keys(bodies).forEach(k => { map[k] = cold(ready, k, bodies[k]); });
+  salesTimes = []; limiterOn();
+  ready.t = Date.now() + SEC(readyS);
+  const t0 = Date.now();
+  await start(map, { eb: EB(extraEb) });
+  await waitFor(settled, SEC(120));
+  await sleep(SEC(15));
+  const rel = salesTimes.map(t => t - t0);
+  const out = { t0, rel, max60: maxInWindow(salesTimes, SEC(60)), hits: lim.hits, total: salesTimes.length };
+  lim = null;                                        // the mock limiter only runs inside budget scans
+  return out;
+}
+
 (async () => {
-section('0 — load + constants');
-['psSalesIsWarming', 'psSalesFreshness', 'psSalesFreshnessText', 'psSalesWarmSchedule', 'psSalesWarmCancel']
+section('0 — load');
+['psSalesStartRead', 'psSalesWarmSchedule', 'psSalesWarmSettled', 'psSalesWarmCancel', 'psSalesSnapshotReady']
   .forEach(fn => checkTrue(`loaded: ${fn}()`, typeof sandbox[fn] === 'function', typeof sandbox[fn]));
-check('0b retry constants: 2 s first, 3 s after, ≤30 retries, ≤90 s, retry_after cap 10 s', REAL,
-  { PS_SALES_WARM_FIRST_MS: 2000, PS_SALES_WARM_EVERY_MS: 3000, PS_SALES_WARM_MAX_TRIES: 30, PS_SALES_WARM_MAX_MS: 90000, PS_SALES_WARM_RETRY_AFTER_MAX_MS: 10000 });
-checkTrue('0c 30 retries fit the 90 s budget (2 + 29×3 = 89 s)', REAL.PS_SALES_WARM_FIRST_MS + (REAL.PS_SALES_WARM_MAX_TRIES - 1) * REAL.PS_SALES_WARM_EVERY_MS <= REAL.PS_SALES_WARM_MAX_MS, '');
-FAST();
 
-section('1–2 — backward compatibility with the current backend (no B2 metadata)');
-await start({ [S1PK]: { body: LEGO_1PK() }, [S2PK]: { body: LEGO_2PK() } });
-checkTrue('1 old-backend confirmed response renders the #22B table', shows(S1PK, '90d', 273, '136 orders', '3.03') && shows(S2PK, '7d', 15, '5 orders', '2.14'), block(S1PK));
-checkTrue('2 metadata absent: no age note, no freshness field, no retry loop', !slot().includes('ps-ss-age') && !('freshness' in entry(S1PK)) && armed() === 0 && !Object.values(loops()).some(L => L.phase === 'warming'), JSON.stringify(entry(S1PK)));
-check('2b one sales request per exact SKU (as #22B)', [salesOf(S1PK), salesOf(S2PK)], [1, 1]);
-
-section('3–11 — warming → automatic retry → confirmed');
-FAST();
-await start({ [S1PK]: seq(S1PK, [W(S1PK), W(S1PK), W(S1PK), OK1()]), [S2PK]: seq(S2PK, [OK2()]) });
-check('3 warming recognised', entry(S1PK).state, 'warming');
-checkTrue('4 warming shows no fake zero', !/ps-ss-n">0</.test(block(S1PK)) && !block(S1PK).includes(' packs'), block(S1PK));
-checkTrue('5 warming shows the preparing text, not "Ventas no confirmadas"', block(S1PK).includes('⏳ Preparando ventas reales…') && block(S1PK).includes('Actualizando automáticamente.') && !block(S1PK).includes('Ventas no confirmadas'), block(S1PK));
-checkTrue('6 auto-retry scheduled (one armed timer for that SKU)', armed() === 1 && !!loops()[sandbox.psSbInvKey(S1PK)], JSON.stringify(Object.keys(loops())));
-// #22C-0C: the other exact SKU waits for the ONE shared probe (no own timer, no own request).
-checkTrue('27b the other SKU waits for the shared probe (no own timer, no request yet)', entry(S2PK).state === 'warming' && !loops()[sandbox.psSbInvKey(S2PK)] && salesOf(S2PK) === 0, JSON.stringify({ st: entry(S2PK).state, n: salesOf(S2PK) }));
-await waitFor(() => entry(S1PK).state === 'ok', 3000);
-checkTrue('11 employee did not rescan: the table filled automatically', entry(S1PK).state === 'ok' && shows(S1PK, '90d', 273, '136 orders', '3.03'), block(S1PK));
-check('10 confirmed stops polling: exactly 1 + 3 requests', salesOf(S1PK), 4);
-await sleep(150);
-check('29 no polling after confirmed', [salesOf(S1PK), armed()], [4, 0]);
-check('9 #22C-0C one shared loop per scan; the other SKU is read ONCE after the probe confirms, with its own numbers', [Object.keys(loops()), salesOf(S2PK), shows(S2PK, '90d', 38, '9 orders', '0.42')], [[sandbox.psSbInvKey(S1PK)], 1, true]);
-
-section('7–8, 48 — never resolves: bounded, then unconfirmed');
-setWarm(10, 15, 6, 90000);
-await start({ [S1PK]: seq(S1PK, [W(S1PK)]), [S2PK]: seq(S2PK, [OK2()]) });
-await waitFor(() => entry(S1PK).state === 'error', 3000);
-check('7 retry bounded by attempts: 1 + 6 requests', salesOf(S1PK), 7);
-checkTrue('7b after the limit: "⚠️ Ventas no confirmadas" (warming timeout)', block(S1PK).includes('⚠️ Ventas no confirmadas') && block(S1PK).includes('sales_snapshot_warming_timeout'), block(S1PK));
-await sleep(200);
-check('8 no infinite polling (no more requests, no armed timer)', [salesOf(S1PK), armed()], [7, 0]);
-setWarm(10, 40, 1000, 200);
-await start({ [S1PK]: seq(S1PK, [W(S1PK)]), [S2PK]: seq(S2PK, [OK2()]) });
-await waitFor(() => entry(S1PK).state === 'error', 3000);
-const byTime = salesOf(S1PK);
-checkTrue('7c retry bounded by elapsed time too (200 ms budget, 40 ms steps → ≤ 7 requests)', byTime >= 3 && byTime <= 7, byTime);
-await sleep(200);
-checkTrue('48 request count bounded (probe ≤ 1 + MAX_TRIES; the waiting SKU is never read; nothing after the limit)', salesOf(S1PK) === byTime && salesOf(S2PK) === 0 && block(S2PK).includes('sales_snapshot_warming_timeout'), salesOf(S1PK) + '/' + salesOf(S2PK));
-
-section('12–17 — freshness note');
-FAST();
-await start({ [S1PK]: { body: OK1({ snapshot_age_seconds: 0, refreshing: false, stale: false }).body },
-              [S2PK]: { body: OK2({ snapshot_age_seconds: 45, refreshing: false, stale: false }).body } });
-checkTrue('12 fresh snapshot → "Datos actualizados hace menos de 1 min" (secondary style)', block(S1PK).includes('<div class="ps-ss-sub ps-ss-age">Datos actualizados hace menos de 1 min</div>'), block(S1PK));
-checkTrue('13 < 1 minute note', block(S2PK).includes('Datos actualizados hace menos de 1 min'), block(S2PK));
-await start({ [S1PK]: { body: OK1({ snapshot_age_seconds: 245, refreshing: false, stale: false }).body },
-              [S2PK]: { body: OK2({ snapshot_age_seconds: 720, refreshing: true, stale: true }).body } });
-checkTrue('14 multi-minute note: "Datos actualizados hace 4 min"', block(S1PK).includes('Datos actualizados hace 4 min'), block(S1PK));
-checkTrue('15 refreshing note: "Datos de hace 12 min · actualizando…"', block(S2PK).includes('Datos de hace 12 min · actualizando…'), block(S2PK));
-checkTrue('16 stale confirmed data remains visible (numbers, not a loading screen)', shows(S2PK, '90d', 38, '9 orders', '0.42') && !block(S2PK).includes('⏳'), block(S2PK));
-checkTrue('17 stale=true does not hide numbers and uses no alarming wording', shows(S2PK, '30d', 32, '7 orders', '1.07') && !/inválid|incorrect|no confirmad/i.test(block(S2PK)), block(S2PK));
-check('17b a stale/refreshing confirmed answer is NOT re-polled', [salesOf(S1PK), salesOf(S2PK), armed()], [1, 1, 0]);
-
-section('18–21 — generic failures keep "⚠️ Ventas no confirmadas", no auto-retry');
-FAST();
-await start({ [S1PK]: { status: 500, body: { status: 'unconfirmed', complete: false, reason: 'ebay_http_500', windows: null } },
-              [S2PK]: { mode: 'malformed' } });
-await sleep(120);
-checkTrue('18 generic 500 → unconfirmed, not retried', block(S1PK).includes('⚠️ Ventas no confirmadas') && block(S1PK).includes('ebay_http_500') && salesOf(S1PK) === 1, block(S1PK));
-checkTrue('19 malformed response → unconfirmed, not retried', block(S2PK).includes('⚠️ Ventas no confirmadas') && salesOf(S2PK) === 1, block(S2PK));
-await start({ [S1PK]: { mode: 'network' },
-              [S2PK]: { status: 502, body: { status: 'unconfirmed', complete: false, reason: 'ebay_http_500', windows: null, refreshing: false, retry_after_seconds: 42 } } });
-await sleep(120);
-checkTrue('20 network error → unconfirmed, not retried', block(S1PK).includes('⚠️ Ventas no confirmadas') && salesOf(S1PK) === 1, block(S1PK));
-checkTrue('21 backoff (retry_after_seconds on a failure) → unconfirmed, waits for the user, no hammering', block(S2PK).includes('⚠️ Ventas no confirmadas') && salesOf(S2PK) === 1 && armed() === 0, block(S2PK));
-await start({ [S1PK]: seq(S1PK, [{ status: 503, body: warmBody(S1PK, { refreshing: false }) }]), [S2PK]: seq(S2PK, [OK2()]) });
-await sleep(120);
-checkTrue('21b "warming" without refreshing=true is not trusted as warming (no retry)', block(S1PK).includes('⚠️ Ventas no confirmadas') && salesOf(S1PK) === 1, block(S1PK));
-setWarm(10, 10, 30, 90000, 120);
-await start({ [S1PK]: seq(S1PK, [{ status: 503, body: warmBody(S1PK, { retry_after_seconds: 0.1 }) }, OK1()]), [S2PK]: seq(S2PK, [OK2()]) });
-const tWarm = Date.now();
-await waitFor(() => salesOf(S1PK) >= 2, 2000);
-const waited = Date.now() - tWarm;
-checkTrue('21c retry_after_seconds on a warming answer lengthens the wait (100 ms vs 10 ms step)', waited >= 80, waited);
-await start({ [S1PK]: seq(S1PK, [{ status: 503, body: warmBody(S1PK, { retry_after_seconds: 99999 }) }, OK1()]), [S2PK]: seq(S2PK, [OK2()]) });
-const tCap = Date.now();
-await waitFor(() => entry(S1PK).state === 'ok', 3000);
-checkTrue('21d a huge retry_after_seconds is capped (cap 120 ms in this run; real 10 s)', entry(S1PK).state === 'ok' && Date.now() - tCap < 1000, Date.now() - tCap);
-
-section('22–25 — a new scan cancels / ignores the old retry');
-setWarm(60, 60, 30, 90000);
-await start({ [S1PK]: seq(S1PK, [W(S1PK)]), [S2PK]: seq(S2PK, [W(S2PK)]) });
-const oldSt = salesState();
-checkTrue('27 #22C-0C multiple warming SKUs share ONE loop / ONE armed timer', Object.keys(loops()).length === 1 && armed() === 1, JSON.stringify(Object.keys(loops())));
-// employee scans another product (no Sellbrite SKUs) while LEGO is warming
-resetAll();
-setCur(fixture('012345678905', 'Other')); sbConfig.products = [];
-await Promise.all([sandbox.psCheckSellbrite('012345678905', 'Other'), sandbox.psCheckEbaySellerListings('012345678905', 'Other', '')]);
-await settleSales();
-checkTrue('22 scan change cancels the old retry timers', !!oldSt.warmLoops && Object.keys(oldSt.warmLoops).length === 1 && Object.values(oldSt.warmLoops).every(L => !L.timer && L.done), JSON.stringify(oldSt.warmLoops));
-await sleep(250);
-check('23 old retry never requests after the new scan (log reset at the new scan; new product has no SKU)', salesCalls.length, 0);
-checkTrue('24 old response never paints into the new scan', !slot().includes(S1PK) && !slot().includes('Preparando'), slot());
-// same UPC, newer scan: the in-flight old read answers late → ignored; its loop is dead
-setWarm(40, 40, 30, 90000);
-let rel; const late = new Promise(r => { rel = r; });
-await start({ [S1PK]: { defer: () => late }, [S2PK]: seq(S2PK, [OK2()]) });
-const staleSt = salesState();
-await start({ [S1PK]: seq(S1PK, [OK1({ snapshot_age_seconds: 5, refreshing: false, stale: false })]), [S2PK]: seq(S2PK, [OK2()]) });
-const callsNow = salesOf(S1PK);
-rel(salesBuild(S1PK, W(S1PK)));
-await sleep(200);
-checkTrue('25 same UPC, newer scan: the old scan\'s late warming answer starts no loop and paints nothing', !!staleSt.warm && staleSt.warm.phase === 'failed' && !staleSt.warm.timer && staleSt.warm.tries === 0 && entry(S1PK).state === 'ok' && salesOf(S1PK) === callsNow && shows(S1PK, '90d', 273, '136 orders', '3.03'), JSON.stringify({ l: staleSt.warmLoops, n: salesOf(S1PK), c: callsNow }));
-
-section('26, 28 — exact SKU isolation; no duplicate timers');
-FAST();
-await start({ [S1PK]: seq(S1PK, [W(S1PK), OK1()]), [S2PK]: seq(S2PK, [W(S2PK), W(S2PK), OK2()]) });
-await waitFor(() => entry(S1PK).state === 'ok' && entry(S2PK).state === 'ok', 3000);
-checkTrue('26 exact SKU isolation: each SKU gets its own numbers', shows(S1PK, '90d', 273, '136 orders', '3.03') && shows(S2PK, '90d', 38, '9 orders', '0.42') && shows(S1, '90d', 0, '0 orders', '0.00') && salesCalls.every(c => [S1, S1PK, S2PK].includes(c.sku)), slot());
-check('26b request counts per SKU follow their own sequences', [salesOf(S1PK), salesOf(S2PK)], [2, 3]);
+section('1–2, 5, 7, 9–11 — 4-SKU LEGO cold (snapshot ready at "50 s"), real B3 timings, mock 30/min limiter');
+B3_TIMINGS();
 {
-  setWarm(80, 80, 30, 90000);
-  await start({ [S1PK]: seq(S1PK, [W(S1PK)]), [S2PK]: seq(S2PK, [OK2()]) });
-  const st0 = salesState(), k = sandbox.psSbInvKey(S1PK);
-  const t0 = st0.warmLoops && st0.warmLoops[k] ? st0.warmLoops[k].timer : null;
-  const again = typeof sandbox.psSalesWarmSchedule === 'function' ? [sandbox.psSalesWarmSchedule(st0, k, 0), sandbox.psSalesWarmSchedule(st0, k, 0)] : [false];
-  sandbox.psRequestSavvySales(LEG, [S1PK, S1PK]);          // same SKU asked again in the same scan
-  checkTrue('28 no duplicate timer per SKU (re-schedule reuses the armed timer; re-request is ignored)', again.every(Boolean) && !!t0 && st0.warmLoops[k].timer === t0 && armed() === 1 && salesOf(S1PK) === 1, JSON.stringify({ again, a: armed(), n: salesOf(S1PK) }));
-  if (typeof sandbox.psSalesWarmCancel === 'function') sandbox.psSalesWarmCancel(st0);
+  const r = await coldScan([S3PK], { [S1]: Z(), [S1PK]: OK1(), [S2PK]: OK2(), [S3PK]: OK3() }, 50);
+  const per = [S1, S1PK, S2PK, S3PK].map(salesOf);
+  console.log('    4-SKU requests: total=' + r.total + ' per SKU ' + JSON.stringify(per) + ' max per "60 s" window=' + r.max60 + ' 429s=' + r.hits);
+  checkTrue('5 4 SKU cold: every exact SKU ends confirmed', [S1, S1PK, S2PK, S3PK].every(s => entry(s).state === 'ok'), JSON.stringify(states()));
+  checkTrue('7 4-SKU request budget ≤ 30 in EVERY sliding "60 s" window, and no 429', r.max60 <= 30 && r.hits === 0, JSON.stringify(r));
+  check('10 final exact-SKU reads: every non-probe SKU read exactly ONCE', per.filter(n => n === 1).length, 3);
+  checkTrue('9 probe warming → confirmed (the one probe carried all the retries)', per.filter(n => n > 1).length === 1 && Math.max(...per) >= 10, JSON.stringify(per));
+  checkTrue('11 exact-SKU results independent (each row shows its OWN numbers)', shows(S1PK, '90d', 273, '136 orders', '3.03') && shows(S2PK, '90d', 38, '9 orders', '0.42') && shows(S3PK, '90d', 6, '3 orders', '0.07') && shows(S1, '90d', 0, '0 orders', '0.00'), slot());
+  check('1 one warming loop per scan (single shared entry) and nothing armed afterwards', [Object.keys(loops()).length, armed()], [1, 0]);
+}
+{ // 2: during warming, 4 warming rows but ONE armed timer
+  const ready = { t: Infinity };
+  await start({ [S1]: cold(ready, S1, Z()), [S1PK]: cold(ready, S1PK, OK1()), [S2PK]: cold(ready, S2PK, OK2()), [S3PK]: cold(ready, S3PK, OK3()) }, { eb: EB([S3PK]) });
+  await sleep(SEC(8));
+  const warmingRows = Object.values(salesState().skus).filter(e => e.state === 'warming').length;
+  checkTrue('2 no per-SKU warming timers: 4 warming rows, ONE armed timer, ONE loop entry', warmingRows === 4 && armed() === 1 && Object.keys(loops()).length === 1, JSON.stringify({ warmingRows, armed: armed(), loops: Object.keys(loops()) }));
+  checkTrue('25 unresolved rows never show zero while warming', !/ps-ss-n">0</.test(slot()) && (slot().match(/Preparando ventas reales/g) || []).length === 4, slot().slice(0, 200));
+  const before = salesCalls.length;
+  sandbox.psRequestSavvySales(LEG, [S1, S1PK, S2PK, S3PK]);          // loader called again for the same scan
+  await sleep(SEC(4));
+  checkTrue('24 duplicate loader call for the same scan creates no second loop / timer / extra reads', Object.keys(loops()).length === 1 && armed() <= 1 && salesCalls.length - before <= 2, JSON.stringify({ loops: Object.keys(loops()), d: salesCalls.length - before }));
+  ready.t = 0; await waitFor(settled, SEC(30));
 }
 
-section('30–36 — sales display semantics unchanged');
-FAST();
-await start({ [S1PK]: seq(S1PK, [W(S1PK), { mode: 'zero' }]), [S2PK]: seq(S2PK, [OK2()]) });
-await waitFor(() => entry(S1PK).state === 'ok', 3000);
-await sleep(120);
-check('30 no polling on confirmed zero', [salesOf(S1PK), armed()], [2, 0]);
-checkTrue('31 confirmed zero remains 0 (after warming)', shows(S1PK, '7d', 0, '0 orders', '0.00') && shows(S1PK, '90d', 0, '0 orders', '0.00'), block(S1PK));
-await start({ [S1PK]: seq(S1PK, [W(S1PK), OK1({ snapshot_age_seconds: 30, refreshing: false, stale: false })]), [S2PK]: seq(S2PK, [OK2()]) });
-await waitFor(() => entry(S1PK).state === 'ok', 3000);
-checkTrue('32 refund display unchanged', cell(S1PK, '90d').includes('⚠️ 3 refunded orders included') && cell(S1PK, '30d').includes('⚠️ 1 refunded order included'), cell(S1PK, '90d'));
-checkTrue('33 cancellation display unchanged', cell(S1PK, '90d').includes('Excluded: 3 cancelled orders / 5 packs'), cell(S1PK, '90d'));
-checkTrue('34 compact table unchanged (one row per SKU, 7D/30D/90D cells, same header)', slot().includes('<table id="ps-savvy-sales-table"><thead><tr><th>SKU / Pack</th><th>7D</th><th>30D</th><th>90D</th></tr></thead>') && (slot().match(/<tr data-sku=/g) || []).length === 3, slot());
-checkTrue('35 nested-window note unchanged', slot().includes('7d ⊂ 30d ⊂ 90d are rolling nested windows: do not add them together.'), '');
-checkTrue('36 average price stays hidden', !/avg|\$|USD|price/i.test(slot().replace(/<style>[\s\S]*?<\/style>/, '')), '');
-
-section('37–41 — inventory first, inventory/location/SUMAR/REEMPLAZAR unaffected');
-FAST();
-await start({ [S1PK]: seq(S1PK, [W(S1PK), W(S1PK), OK1()]), [S2PK]: seq(S2PK, [W(S2PK), OK2()]) });
-const lastInv = Math.max(...callLog.filter(c => c.kind === 'inventory').map(c => c.n));
-checkTrue('37 inventory-first ordering preserved (every sales read, incl. retries, after the last inventory read)', lastInv >= 0 && callLog.filter(c => c.kind === 'sales').every(c => c.n > lastInv), JSON.stringify(callLog.map(c => c.kind)));
-check('38 inventory requests unchanged: one authoritative read per exact SKU, confirmed while sales warm', [readCalls.map(r => r.sku).sort(), inv(S1PK) && inv(S1PK).state], [[S1, S1PK, S2PK].sort(), 'ok']);
-checkTrue('39 location reads unchanged (one per exact SKU, GET)', ssReadCalls.length === 3 && ssReadCalls.every(c => c.method === 'GET'), JSON.stringify(ssReadCalls.map(c => c.sku)));
+section('6, 8 — 6-SKU cold, same conditions');
 {
-  const i = idxOf(S1PK);
-  invConfig.current = 431;
-  getEl('ps-pack-sbqty-' + i).value = '5'; invCalls = [];
-  await sandbox.psUpdateSellbriteInventory(i, 'add', 'pack');
-  check('40 SUMAR unchanged while sales are warming', invCalls[0] && invCalls[0].body, { sku: S1PK, warehouse_uuid: WH, quantity: 5, mode: 'add' });
-  getEl('ps-pack-sbqty-' + i).value = '869'; invCalls = [];
-  await sandbox.psUpdateSellbriteInventory(i, 'set', 'pack');
-  check('41 REEMPLAZAR unchanged', invCalls[0] && invCalls[0].body, { sku: S1PK, warehouse_uuid: WH, quantity: 869, mode: 'set' });
+  const r = await coldScan([S3PK, S6PK, S12PK], { [S1]: Z(), [S1PK]: OK1(), [S2PK]: OK2(), [S3PK]: OK3(), [S6PK]: OK6(), [S12PK]: OK12() }, 50);
+  console.log('    6-SKU requests: total=' + r.total + ' max per "60 s" window=' + r.max60 + ' 429s=' + r.hits);
+  checkTrue('6 6 SKU cold: every exact SKU ends confirmed', allSkus().length === 6 && allSkus().every(s => entry(s).state === 'ok'), JSON.stringify(states()));
+  checkTrue('8 6-SKU request budget ≤ 30 in EVERY sliding "60 s" window, and no 429', r.max60 <= 30 && r.hits === 0, JSON.stringify(r));
+  const late = await coldScan([S3PK, S6PK, S12PK], { [S1]: Z(), [S1PK]: OK1(), [S2PK]: OK2(), [S3PK]: OK3(), [S6PK]: OK6(), [S12PK]: OK12() }, 60);
+  checkTrue('8b 6-SKU budget holds even if the refresh takes "60 s" (≤ 30 per window, no 429)', late.max60 <= 30 && late.hits === 0, JSON.stringify(late));
 }
-await waitFor(idle, 3000);
 
-section('42–47 — scope: Bulk Split / CSV / writes / auth / tokens / timeouts');
-const undone = scope ? scope.undo22c0b3(appSrcC) : null;
-checkTrue('scope: every #22C-0B3 edit present exactly once', !!scope && scope.applied22c0b3(appSrcC), '');
-checkTrue('scope: app.js minus exactly the #22C-0B3 edits is byte-identical to 574a351', base574 != null && undone === base574, '');
-const EDITED = ['psSalesReset', 'psReadSavvySales', 'psParseSavvySales', 'psSavvySalesHtml'];
-const changedFns = base574 == null ? ['?'] : (base574.match(/^(async )?function (\w+)\(/gm) || []).map(x => x.replace(/^(async )?function /, '').replace('(', ''))
-  .filter(n => fnSrc(appSrcC, n) !== fnSrc(base574, n));
-checkTrue('scope: only the 4 sales display functions changed (+ the tail of saveSheetsUrl before the new section)', JSON.stringify(changedFns.filter(n => n !== 'saveSheetsUrl').sort()) === JSON.stringify(EDITED.slice().sort()), JSON.stringify(changedFns));
-const newBlock = (() => { const a = appSrc.indexOf('// ━━ #22C-0B3'); return a > 0 ? appSrc.slice(a) : ''; })();
-checkTrue('42 Bulk Split unchanged (sold.count / getDemandTier / DEMAND_TIERS / allocation / leftover untouched)', ['getDemandTier', 'computeSplit', 'updateSplitCalc', 'addSplitPacksToCSV'].every(n => base574 != null && fnSrc(appSrcC, n) === fnSrc(base574, n)) && !/_splitActive|_splitManual|DEMAND_TIERS|getDemandTier|computeSplit|updateSplitCalc|bulk\b|sold\.count|leftover/.test(newBlock + EDITED.map(n => fnSrc(appSrcC, n)).join('')), '');
-checkTrue('43 CSV unchanged', base574 != null && fnSrc(appSrcC, 'exportCSV') === fnSrc(base574, 'exportCSV') && !/exportCSV|capturedBlobs|\bBlob\(/.test(newBlock), '');
-checkTrue('44 no writes: sales reads are GET-only; new code has no fetch / write methods', salesCalls.every(c => c.method === 'GET' && !c.body) && !/fetch|psAuthFetch|method\s*:|POST|PUT|PATCH|DELETE|update-inventory|create-product/.test(newBlock), '');
-checkTrue('45 auth unchanged: every sales read (incl. retries) carries the session bearer', salesCalls.length > 0 && salesCalls.every(c => c.auth === 'Bearer fake-token') && base574 != null && fnSrc(appSrcC, 'psAuthFetch') === fnSrc(base574, 'psAuthFetch'), JSON.stringify(salesCalls.slice(0, 2).map(c => c.auth)));
-checkTrue('46 token never logged or rendered', !/console\.|_psDebug|savvyToken/.test(newBlock) && !slot().includes('fake-token'), '');
-const timeoutsOf = src => (src.match(/setTimeout\([^;]*?,\s*\d+\s*\)/g) || []).map(x => x.match(/(\d+)\s*\)$/)[1]).sort().join(',');
-checkTrue('47 every existing numeric setTimeout (search 10 s, seller-listings 15 s, …) unchanged', base574 != null && timeoutsOf(appSrcC) === timeoutsOf(base574), '');
+section('3, 4 — 1 SKU and 2 SKU cold');
+{
+  const ready = { t: Date.now() + SEC(20) };
+  resetAll(); callLog.length = 0; salesRead = {};
+  salesRead['NAT-031604004033-1'] = cold(ready, 'NAT-031604004033-1', { mode: 'zero' });
+  setCur(fixture(NAT, 'Nature Made')); setSplitActive(Object.assign({}, ALL_ON)); setSplitManual({});
+  sbConfig.products = [sbProd('NAT-031604004033-1', 5)]; sbConfig.defer = null; ebConfig.listings = [];
+  await Promise.all([sandbox.psCheckSellbrite(NAT, 'Nature Made'), sandbox.psCheckEbaySellerListings(NAT, 'Nature Made', '')]);
+  await waitFor(settled, SEC(60)); await sleep(SEC(8));
+  const n = salesOf('NAT-031604004033-1');
+  checkTrue('3 1 SKU cold: its SKU is the probe, confirmed stops polling', entry('NAT-031604004033-1').state === 'ok' && n >= 5 && armed() === 0, JSON.stringify({ n, st: entry('NAT-031604004033-1').state }));
+}
+{
+  const r = await coldScan([], { [S1]: Z(), [S1PK]: OK1(), [S2PK]: OK2() }, 50);   // LEGO Sellbrite-only: 3 exact SKUs
+  checkTrue('4 multi-SKU cold (Sellbrite SKUs only): all confirmed, one probe, ≤ 30 per window', allSkus().every(s => entry(s).state === 'ok') && r.max60 <= 30 && r.hits === 0, JSON.stringify(r));
+}
 
-section('B2 CONTRACT SIMULATION (mocked backend)');
+section('12–14, 27–30 — confirmed zero, stale / fresh (no polling), display semantics');
 FAST();
-await start({ [S1PK]: seq(S1PK, [W(S1PK), W(S1PK), W(S1PK), W(S1PK), W(S1PK), OK1({ snapshot_age_seconds: 1, refreshing: false, stale: false })]),
-              [S2PK]: seq(S2PK, [W(S2PK), W(S2PK), W(S2PK), OK2({ snapshot_age_seconds: 1, refreshing: false, stale: false })]) });
-const scansBefore = sbCalls.length;
-await waitFor(() => entry(S1PK).state === 'ok' && entry(S2PK).state === 'ok', 3000);
-await sleep(150);
-checkTrue('S1 warming ×N then confirmed: table fills with no rescan', entry(S1PK).state === 'ok' && entry(S2PK).state === 'ok' && sbCalls.length === scansBefore && shows(S1PK, '90d', 273, '136 orders', '3.03'), slot());
-check('S2 exactly 1 + N requests per SKU, then silence (no duplicate loops)', [salesOf(S1PK), salesOf(S2PK), armed()], [6, 4, 0]);
-checkTrue('S3 age note after the warm-up', block(S1PK).includes('Datos actualizados hace menos de 1 min'), block(S1PK));
-setWarm(5, 8, 30, 90000);
-await start({ [S1PK]: seq(S1PK, [W(S1PK)]), [S2PK]: seq(S2PK, [W(S2PK)]) });
-await waitFor(() => entry(S1PK).state === 'error' && entry(S2PK).state === 'error', 5000);
-await sleep(150);
-check('S4 never resolves: the one shared probe stops at the limit (1 + 30); the waiting SKU is never polled', [salesOf(S1PK), salesOf(S2PK)], [31, 0]);
-checkTrue('S5 never resolves: "⚠️ Ventas no confirmadas" shown, no timer left', block(S1PK).includes('⚠️ Ventas no confirmadas') && block(S2PK).includes('⚠️ Ventas no confirmadas') && armed() === 0, slot());
-console.log('  simulated: warming×5 → confirmed = ' + 6 + ' requests (1pk), warming×3 → confirmed = 4 (2pk); never-resolves = 31 for the one probe, 0 for the waiting SKU, then stop (#22C-0C).');
+{
+  const ready = { t: Date.now() + 60 };
+  await start({ [S1]: cold(ready, S1, Z()), [S1PK]: cold(ready, S1PK, OK1({ snapshot_age_seconds: 1, refreshing: false, stale: false })), [S2PK]: cold(ready, S2PK, Z()) });
+  await waitFor(settled, 3000);
+  checkTrue('12 confirmed zero after warming stays a REAL 0 (its own read)', shows(S2PK, '7d', 0, '0 orders', '0.00') && salesOf(S2PK) === 1, block(S2PK));
+  checkTrue('27 refunds preserved', cell(S1PK, '90d').includes('⚠️ 3 refunded orders included'), cell(S1PK, '90d'));
+  checkTrue('28 cancellations preserved', cell(S1PK, '90d').includes('Excluded: 3 cancelled orders / 5 packs'), cell(S1PK, '90d'));
+  checkTrue('29 freshness preserved', block(S1PK).includes('Datos actualizados hace menos de 1 min'), block(S1PK));
+}
+{
+  await start({ [S1PK]: seq(S1PK, [OK1({ snapshot_age_seconds: 720, refreshing: true, stale: true })]), [S2PK]: seq(S2PK, [OK2({ snapshot_age_seconds: 720, refreshing: true, stale: true })]) });
+  await sleep(200);
+  checkTrue('13 stale confirmed (refreshing:true): numbers shown at once, one read per SKU, no polling', [S1, S1PK, S2PK].every(s => salesOf(s) === 1) && armed() === 0 && block(S2PK).includes('Datos de hace 12 min · actualizando…') && shows(S2PK, '90d', 38, '9 orders', '0.42'), JSON.stringify([S1, S1PK, S2PK].map(salesOf)));
+  checkTrue('30 physical units preserved', cell(S2PK, '90d').includes('= 76 physical units'), cell(S2PK, '90d'));
+  await start({ [S1PK]: seq(S1PK, [OK1({ snapshot_age_seconds: 30, refreshing: false, stale: false })]), [S2PK]: seq(S2PK, [OK2()]) });
+  await sleep(200);
+  checkTrue('14 fresh confirmed: one read per exact SKU, no loop timer', [S1, S1PK, S2PK].every(s => salesOf(s) === 1) && armed() === 0, JSON.stringify([S1, S1PK, S2PK].map(salesOf)));
+}
+
+section('15–19, 26 — probe failures');
+{
+  limiterOn(); lim.max = 3;                         // tiny budget: the probe's 4th call gets 429
+  const ready = { t: Infinity };
+  await start({ [S1]: cold(ready, S1, Z()), [S1PK]: cold(ready, S1PK, OK1()), [S2PK]: cold(ready, S2PK, OK2()) });
+  await waitFor(settled, 3000); await sleep(200);
+  const n = salesCalls.length;
+  await sleep(300);
+  checkTrue('15 probe 429 stops the loop: unresolved rows "Ventas no confirmadas (http_429)", no retry storm', Object.values(salesState().skus).every(e => e.state === 'error' && e.reason === 'http_429') && salesCalls.length === n && n === 4 && armed() === 0, JSON.stringify({ n, s: states() }));
+  checkTrue('25b failed rows never show zero', !/ps-ss-n">0</.test(slot()) && (slot().match(/Ventas no confirmadas <span class="ps-ss-sub">\(http_429\)/g) || []).length === 3, slot().slice(0, 200));
+  lim = null;
+}
+for (const [id, name, spec] of [['16', 'HTTP 500', { status: 500, body: { status: 'unconfirmed', complete: false, reason: 'ebay_http_500', windows: null } }],
+                                  ['17', 'malformed response', { mode: 'malformed' }], ['18', 'network error', { mode: 'network' }]]) {
+  let first = true;
+  await start({ [S1PK]: { defer: async () => { const r = salesBuild(S1PK, first ? W(S1PK) : spec); first = false; return r; } },
+                [S1]: seq(S1, [Z()]), [S2PK]: seq(S2PK, [OK2()]) });
+  await waitFor(settled, 3000); await sleep(200);
+  const n = salesCalls.length; await sleep(200);
+  checkTrue(`${id} probe ${name} stops the loop; the row is "no confirmadas", others read once (existing fail-safe), no retries`, entry(S1PK).state === 'error' && salesOf(S1PK) === 2 && salesOf(S1) === 1 && salesOf(S2PK) === 1 && salesCalls.length === n && armed() === 0 && !/ps-ss-n">0<\/span> packs<div class="ps-ss-sub">0 orders · 0.00 packs\/day<\/div><\/td><td data-label="30D" class="ps-ss-cell"><span class="ps-ss-n">0/.test(block(S1PK)), JSON.stringify({ s: states(), n: [S1, S1PK, S2PK].map(salesOf) }));
+}
+{
+  const before = expired.n;
+  await start({ [S1PK]: seq(S1PK, [{ mode: 'http401' }]), [S1]: seq(S1, [Z()]), [S2PK]: seq(S2PK, [OK2()]) });
+  await waitFor(settled, 3000);
+  checkTrue('19 401 on the gate → existing session-expired behaviour (savvySesionCaducada, "sesion_expirada"), no polling', entry(S1PK).state === 'error' && entry(S1PK).reason === 'sesion_expirada' && expired.n > before && armed() === 0, JSON.stringify({ r: entry(S1PK).reason, e: expired.n - before }));
+}
+{
+  // gate confirmed first, then a later final read comes back warming and its probe hits 429
+  limiterOn(); lim.max = 4;
+  await start({ [S1PK]: seq(S1PK, [OK1()]), [S1]: seq(S1, [W(S1)]), [S2PK]: seq(S2PK, [W(S2PK)]) });
+  await waitFor(settled, 3000); await sleep(150);
+  checkTrue('26 already-confirmed rows are not erased by a later failure', entry(S1PK).state === 'ok' && shows(S1PK, '90d', 273, '136 orders', '3.03') && Object.values(salesState().skus).some(e => e.state === 'error'), JSON.stringify(states()));
+  lim = null;
+}
+
+section('20–23 — stale scan safety');
+{
+  setWarm(40, 40, 30, 5000);
+  const ready = { t: Infinity };
+  await start({ [S1]: cold(ready, S1, Z()), [S1PK]: cold(ready, S1PK, OK1()), [S2PK]: cold(ready, S2PK, OK2()) });
+  const oldSt = salesState(), oldW = oldSt.warm;
+  resetAll(); setCur(fixture(NEWU, 'Other')); sbConfig.products = [];
+  await Promise.all([sandbox.psCheckSellbrite(NEWU, 'Other'), sandbox.psCheckEbaySellerListings(NEWU, 'Other', '')]);
+  await sleep(250);
+  checkTrue('20 new scan cancels the old shared timer', !!oldW && !oldW.timer && oldW.phase === 'failed' && oldW.failReason === 'scan_replaced', JSON.stringify(oldW && { p: oldW.phase, t: !!oldW.timer }));
+  check('21 late probe ignored: no request for the old scan after the new one', salesCalls.length, 0);
+  checkTrue('21b nothing from the old product paints into the new one', !slot().includes(S1PK) && !slot().includes('Preparando'), slot());
+}
+{
+  // late FINAL read: gate confirms, a final read is still in flight when the same UPC is scanned again
+  FAST();
+  let relS2; const lateS2 = new Promise(r => { relS2 = r; });
+  await start({ [S1PK]: seq(S1PK, [OK1()]), [S1]: seq(S1, [Z()]), [S2PK]: { defer: () => lateS2 } });
+  const g1 = salesState();
+  await start({ [S1PK]: seq(S1PK, [OK1({ snapshot_age_seconds: 5, refreshing: false, stale: false })]), [S1]: seq(S1, [Z()]), [S2PK]: seq(S2PK, [Z()]) });
+  const g2 = salesState();
+  await waitFor(settled, 2000);
+  relS2(salesBuild(S2PK, OK2()));
+  await sleep(150);
+  checkTrue('22 late final read from the previous scan is ignored (the new scan keeps its own confirmed zero)', shows(S2PK, '90d', 0, '0 orders', '0.00') && entry(S2PK).state === 'ok', block(S2PK));
+  checkTrue('23 same UPC rescanned = new scan generation (new state object, new shared probe state)', g1 !== g2 && g1.warm !== g2.warm && g2.upc === g1.upc, '');
+}
 
 section('SUMMARY');
 console.log(`\n${passed} passed, ${failed} failed`);
