@@ -12057,6 +12057,12 @@ async function exportCSV(){
     }
     var departmentVal = _specForCol('C:Department') || psExtractGenderDepartment(it.title);
 
+    // ── Model: precedence logic (structured IA data preferred over title extraction)
+    var structuredModel = _specForCol('C:Model');
+    var finalModelVal = (structuredModel && structuredModel.trim() !== '' && structuredModel !== 'Does Not Apply')
+      ? structuredModel
+      : modelVal;
+
     // 🔍 CHECKPOINT E — VALUES BEFORE lines.push (PRE-CSV SERIALIZATION)
     lines.push([
       'Add',
@@ -12076,7 +12082,7 @@ async function exportCSV(){
       upcVal,
       typeVal,
       epaVal,
-      modelVal,
+      finalModelVal,
       colorVal,
       langVal,
       bookTitle,
@@ -12105,6 +12111,9 @@ async function exportCSV(){
       ageGroupVal,
       departmentVal,
       _specForCol('C:MPN'),
+      _specForCol('C:Manufacturer'),
+      _specForCol('C:Set'),
+      _specForCol('C:Compatible Model'),
       _specForCol('C:Period After Opening (PAO)'),
       _specForCol('C:Styling Effect'),
       _specForCol('C:Product Line'),
