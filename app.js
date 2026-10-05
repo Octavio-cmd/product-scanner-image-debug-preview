@@ -8967,26 +8967,29 @@ function psStripDosageFromIngredient(val) {
   return String(val).replace(/\s*\d+\.?\d*\s?(mg|mcg|iu|ml|oz|g)\b\.?\s*$/i, '').trim();
 }
 
-// PHASE 2B: Helper to detect if a value is likely a commercial line name vs model code
-function isCommercialLineWord(val) {
-  if (!val) return false;
-  var val_ = String(val).trim().toUpperCase();
+// PHASE 2B CORRECTED: Check if Model value matches a structurally-verified Product Line
+// ONLY delete Model if there is explicit relational conflict with structured Product Line
+// NO word-shape guessing, NO hardcoded lists
+function shouldDeleteModel(model, productLine, structuredProductLine) {
+  if (!model) return false;
 
-  // If contains numbers, likely a model code (FN103A, AD150A, MW9255B)
-  if (/[0-9]/.test(val_)) return false;
+  var modelNorm = String(model).toLowerCase().trim();
+  var productLineNorm = productLine ? String(productLine).toLowerCase().trim() : '';
+  var structuredLineNorm = structuredProductLine ? String(structuredProductLine).toLowerCase().trim() : '';
 
-  // If matches alphanumeric model pattern: 1-3 letters + digits + optional letter
-  if (/^[A-Z]{1,3}\d+[A-Z]?$/i.test(val_)) return false;
+  // ONLY delete Model if it equals a VERIFIED structured Product Line
+  // This means the model value is the same as an explicit, verified Product Line from eBay data
+  if (structuredLineNorm && modelNorm === structuredLineNorm) {
+    return true; // Model is duplicate of verified Product Line
+  }
 
-  // Known commercial line words
-  var KNOWN_LINES = ['CRISPI', 'FOODI', 'PROFESSIONAL', 'CLASSIC', 'SERIES',
-                     'PLUS', 'PRO', 'ULTRA', 'ELITE', 'STANDARD', 'BASIC',
-                     'DELUXE', 'PREMIUM', 'SIGNATURE'];
-  if (KNOWN_LINES.indexOf(val_) >= 0) return true;
+  // ONLY delete if Model == prefilled/structured Product Line AND no structured Model exists
+  // (structured Model would have priority via pre-fill)
+  if (productLineNorm && modelNorm === productLineNorm && structuredLineNorm) {
+    return true; // Clear duplicate when both Model and PL refer to same value
+  }
 
-  // Single or two-word values without numbers = likely commercial line
-  if (!/[0-9]/.test(val_) && val_.split(/\s+/).length <= 2) return true;
-
+  // Otherwise: preserve Model. Do NOT guess based on word format, length, or hardcoded lists
   return false;
 }
 
@@ -9637,10 +9640,10 @@ async function psGenerateSpecifics(source){
     + '- For beauty/haircare products without a visible color: use "Clear", "Colorless", or "Translucent" as Color value.\n'
     + '- For gels/creams/mousses: always specify Formulation (e.g., "Gel", "Mousse", "Lightweight Gel", "Styling Mousse").\n'
     + '- For Country/Region of Manufacture: use common knowledge (e.g., USA for Hollywood Beauty, Germany for many European brands, Japan for many beauty brands). If genuinely unknown, use the brand origin country.\n'
-    + '- CRITICAL DISTINCTION — "Model" vs "Product Line" (PHASE 2B):\n'
-    + '  * "Model" = Manufacturer\'s alphanumeric identifier code (e.g., FN103A, AD150A, MW9255B, A50-BK). Models contain numbers and/or hyphens. Only fill if a real model code exists. If uncertain, leave empty.\n'
-    + '  * "Product Line" = Commercial/family name visible in title (e.g., "CRISPi" in "Ninja CRISPi", "FOODI" in "Ninja Foodi", "Pure Honey", "Aquafresh Complete Care"). Only fill if a real collection/sub-brand name is stated, not the base brand itself.\n'
-    + '  * NEVER use a commercial line name as Model. If title says "Ninja CRISPi" but you see only "CRISPi", do NOT fill Model — that is a Product Line, not a Model. If a real model (alphanumeric code) is provided in pre-parsed fields, ALWAYS use it for Model and move any commercial line name to Product Line.\n'
+    + '- CRITICAL DISTINCTION — "Model" vs "Product Line" (PHASE 2B CORRECTED):\n'
+    + '  * "Model" = Manufacturer\'s specific model identifier for the exact product. Examples: FN103A, AD150A, MW9255B, A50-BK, "Aura", "Studio Pro". Model may be alphanumeric, may be word-based. Do NOT infer whether a value is Model solely from its character format. Only fill if a real, specific model identifier exists. If uncertain, leave empty.\n'
+    + '  * "Product Line" = Marketed family/series/collection name. Examples: "CRISPi" in "Ninja CRISPi", "FOODI" in "Ninja Foodi", "Pure Honey", "Aquafresh Complete Care". Only fill if a real collection/sub-brand name is explicitly stated, not the base brand itself.\n'
+    + '  * If the same value appears to be BOTH a potential Model AND Product Line (e.g., "FOODI" in title), and a verified Product Line is provided in pre-parsed fields, omit Model rather than duplicating Product Line into Model. If a real Model is provided in pre-parsed fields, ALWAYS use it for Model.\n'
     + '- NEW FIELDS to fill when they apply: "Product Line" (the sub-brand/collection name, often visible in the title, e.g. "Pure Honey", "Aquafresh Complete Care", "Simply Nourish", "CRISPi", "FOODI" — only fill if a real collection name is stated, not the base brand itself). "Styling Effect" (haircare only: e.g. "Curl Enhancing", "Nourishing", "Volumizing", "Smoothing" — infer from the product\'s stated purpose). "Item Weight" (the dry/solid weight in oz or g, when the product has one SEPARATE from a liquid Volume — e.g. a toothpaste tube net weight; skip if Volume already covers it). "Size Type" (simple category: "Standard Size", "Travel Size", "Trial Size" — infer from title/size only if clearly one of these). "Period After Opening (PAO)" (cosmetics/skincare/oral-care industry standard, format like "12M" or "24M" for months — only use a value if it is a reasonably standard, well-known convention for that PRODUCT TYPE, e.g. most toothpaste/cosmetics are commonly 12M-24M; if you are not reasonably confident, LEAVE THIS FIELD OUT rather than guessing). "MPN" (Manufacturer Part Number — only fill if you genuinely know the real MPN for that exact product; if unknown, use the literal value "Does Not Apply", which is the standard eBay-accepted convention for unknown/non-applicable MPNs — never invent a fake part number). "When to Take" (vitamins/supplements ONLY: e.g. "After Meal", "Before Meal", "With Food", "Morning", "Before Bed" — use the well-known instructions if confident. If NOT confident, use the literal value "As Directed" instead of omitting it — never leave this blank for a vitamin/supplement product). "Model" (Manufacturer model identifier — alphanumeric code like FN103A, AD150A. Do NOT invent; if not in title or pre-parsed, leave empty. DO NOT use commercial line names as Model).\n'
     + '- Values must be short and eBay-friendly (a few words max).\n'
     + '- Do NOT include Brand, Type, UPC, or EPA (already handled).\n'
@@ -9742,23 +9745,27 @@ async function psGenerateSpecifics(source){
       }
     }
 
-    // PHASE 2B: Post-Claude validation for Model vs Product Line
-    // Prevent Claude from accidentally using commercial line names as Model
+    // PHASE 2B CORRECTED: Post-Claude validation for Model vs Product Line
+    // ONLY delete Model if there is relational conflict (Model == verified structured Product Line)
+    // Preserve Model if it's word-only with no conflicting structured Product Line
     var modelVal = clean['Model'];
     var productLineVal = clean['Product Line'];
+    var structuredModel = prefilled['Model'] || '';
+    var structuredProductLine = prefilled['Product Line'] || '';
 
-    // 4A: If Model is a commercial line word, move to Product Line and clear Model
-    if (modelVal && isCommercialLineWord(modelVal)) {
-      if (!productLineVal || productLineVal === '') {
-        clean['Product Line'] = modelVal;
-      }
+    // Only delete Model if it conflicts with structurally-verified Product Line
+    if (shouldDeleteModel(modelVal, productLineVal, structuredProductLine)) {
       delete clean['Model'];
     }
 
-    // 4B: If Model == Product Line (ignoring case), keep only Product Line
-    if (modelVal && productLineVal &&
-        modelVal.toLowerCase().trim() === productLineVal.toLowerCase().trim()) {
-      delete clean['Model'];
+    // Ensure structured Model (highest confidence) is always preserved
+    if (structuredModel) {
+      clean['Model'] = structuredModel;
+    }
+
+    // Ensure structured Product Line (highest confidence) is always preserved
+    if (structuredProductLine) {
+      clean['Product Line'] = structuredProductLine;
     }
 
     // Filtrar valores inventados antes de guardar (ver psScrubSpecs).
