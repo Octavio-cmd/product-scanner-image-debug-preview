@@ -9517,7 +9517,7 @@ async function psGenerateSpecifics(source){
     'Department','Age Group','MPN','Model','Connectivity','SPF','Power Source',
     'Item Form','Fragrance','Scent Type','Unit Quantity','Unit Type',
     'Country/Region of Manufacture','Country of Origin','Expiration Date',
-    'Main Purpose','Body Area','Type of Product','Set Includes',
+    'Main Purpose','Body Area','Type of Product','Set Includes','Set','Manufacturer','Compatible Model',
     'Period After Opening (PAO)','Styling Effect','Product Line','Item Weight','Size Type','When to Take'
   ];
 
@@ -11076,7 +11076,7 @@ async function exportCSV(){
     'C:Features','C:Material','C:Number of Doses','C:Suitable For',
     'C:Fragrance','C:Item Form','C:Country of Origin',
     'C:Main Purpose','C:Age Group','C:Department',
-    'C:MPN','C:Period After Opening (PAO)','C:Styling Effect','C:Product Line','C:Item Weight','C:Size Type','C:When to Take',
+    'C:MPN','C:Manufacturer','C:Set','C:Compatible Model','C:Period After Opening (PAO)','C:Styling Effect','C:Product Line','C:Item Weight','C:Size Type','C:When to Take',
     'WeightMajor','WeightMinor'
   ];
 
@@ -11105,6 +11105,10 @@ async function exportCSV(){
     'Age Group':'C:Age Group',
     'Department':'C:Department',
     'MPN':'C:MPN',
+    'Model':'C:Model',
+    'Manufacturer':'C:Manufacturer',
+    'Set':'C:Set',
+    'Compatible Model':'C:Compatible Model',
     'Period After Opening (PAO)':'C:Period After Opening (PAO)', 'PAO':'C:Period After Opening (PAO)',
     'Styling Effect':'C:Styling Effect',
     'Product Line':'C:Product Line',
@@ -11829,7 +11833,7 @@ async function exportCSV(){
     }
 
     var pics = it.bundleImg || it.photo || it.imgUrl || '';
-    var typeVal   = detectType(String(it.category), it.title);
+    var typeVal   = detectType(String(_finalCat), it.title);
     if (!psTypeCategoryPlausible(_finalCat, typeVal, it.title)) {
       typeVal = 'Other';
     }
