@@ -133,8 +133,10 @@ let _keysLoaded = false;
 // La clave de Anthropic ya no llega al navegador: vive solo en el
 // backend. Aqui solo viaja un token de sesion firmado.
 // Backend centralizado en una sola constante (staging).
+// PRODUCT SCANNER PREVIEW: Puntos al staging backend con eBay aspects fix
+// PRODUCTION: Mantiene el backend de producción (repository diferente)
 // ══════════════════════════════════════════════════════════════
-const SAVVY_API = 'https://savvy-ebay-prices-production.up.railway.app';
+const SAVVY_API = 'https://savvy-ebay-prices-product-scanner-staging.up.railway.app';
 const SAVVY_MODELO = 'claude-haiku-4-5-20251001';
 
 // sessionStorage y no localStorage: los iPhone del almacen son compartidos,
@@ -5205,7 +5207,8 @@ async function _doAnalyze(upc){
         name:  rwData.name || '',
         brand: rwData.brand || '',
         found: true,
-        source: rwData.data_source || 'railway'
+        source: rwData.data_source || 'railway',
+        aspects: Array.isArray(rwData.aspects) ? rwData.aspects : []
       };
       $('lp').textContent = prod.name.substring(0, 50);
 
