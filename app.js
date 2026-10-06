@@ -9737,7 +9737,25 @@ async function psGenerateSpecifics(source){
       // FIX: Protect all eBay-provided fields (PHASE 2: Protect eBay-provided fields)
       // If eBay localizedAspects provided this field, Claude cannot override it
       var kNorm = String(k).toLowerCase().trim();
-      if (ebayAspectMap.hasOwnProperty(kNorm)) {
+
+      // Build alias map for checking during merge
+      var ebayToSupportedAlias = {
+        'type': 'Type of Product'
+      };
+
+      // Check if this field or its eBay alias is protected by eBay
+      var isEBayProtected = ebayAspectMap.hasOwnProperty(kNorm);
+      if (!isEBayProtected) {
+        // Check if this field is the target of an eBay alias
+        for (var aliasEBay in ebayToSupportedAlias) {
+          if (ebayToSupportedAlias[aliasEBay].toLowerCase() === kNorm && ebayAspectMap.hasOwnProperty(aliasEBay)) {
+            isEBayProtected = true;
+            break;
+          }
+        }
+      }
+
+      if (isEBayProtected) {
         continue; // Skip Claude value: eBay value is authoritative
       }
 
@@ -9801,17 +9819,31 @@ async function psGenerateSpecifics(source){
 
     // FIX: Restore all eBay-provided fields that aren't already in clean (PHASE 2 restoration)
     // This ensures that eBay data is preserved even if not in prefilled and Claude was skipped
+
+    // eBay aspect name aliases → SUPPORTED field names
+    var ebayToSupportedAlias = {
+      'type': 'Type of Product'  // eBay "Type" (e.g., "Air Fryer") → SUPPORTED "Type of Product"
+    };
+
     for (var ebayFieldNorm in ebayAspectMap) {
       if (ebayAspectMap.hasOwnProperty(ebayFieldNorm)) {
         var ebayValue = ebayAspectMap[ebayFieldNorm];
         // Find the proper case-sensitive field name from SUPPORTED
         var properFieldName = null;
-        for (var si = 0; si < SUPPORTED.length; si++) {
-          if (SUPPORTED[si].toLowerCase() === ebayFieldNorm) {
-            properFieldName = SUPPORTED[si];
-            break;
+
+        // First check if there's an alias for this eBay field
+        if (ebayToSupportedAlias.hasOwnProperty(ebayFieldNorm)) {
+          properFieldName = ebayToSupportedAlias[ebayFieldNorm];
+        } else {
+          // Otherwise, try exact case-insensitive match against SUPPORTED
+          for (var si = 0; si < SUPPORTED.length; si++) {
+            if (SUPPORTED[si].toLowerCase() === ebayFieldNorm) {
+              properFieldName = SUPPORTED[si];
+              break;
+            }
           }
         }
+
         // If field exists in SUPPORTED and not already in clean, restore eBay value
         if (properFieldName && !clean.hasOwnProperty(properFieldName)) {
           clean[properFieldName] = String(ebayValue).substring(0, 65);

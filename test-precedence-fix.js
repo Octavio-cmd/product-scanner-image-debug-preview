@@ -464,6 +464,93 @@ function test10_RealisticNinjaUPC() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// TEST 11: eBay Type alias mapping to Type of Product
+// ─────────────────────────────────────────────────────────────────────
+function test11_TypeAliasMapping() {
+  console.log('\n=== TEST 11: eBay Type alias → Type of Product ===');
+
+  const eBayAspects = [
+    { name: "Type", value: "Air Fryer" },
+    { name: "Brand", value: "Ninja" }
+  ];
+
+  const claudeResponse = {
+    "Type of Product": "Countertop Oven",  // Claude tries to override
+    "Features": "Portable"
+  };
+
+  // Build eBay aspect map
+  var ebayAspectMap = {};
+  for (var i = 0; i < eBayAspects.length; i++) {
+    var asp = eBayAspects[i];
+    var aspNameNorm = String(asp.name).toLowerCase().trim();
+    ebayAspectMap[aspNameNorm] = asp.value;
+  }
+
+  var clean = {};
+  const SUPPORTED = ['Type of Product', 'Features', 'Brand'];
+
+  // eBay aspect name aliases
+  var ebayToSupportedAlias = {
+    'type': 'Type of Product'
+  };
+
+  // Merge phase: skip Claude for eBay-provided (with alias checking)
+  for (var k in claudeResponse) {
+    if (!claudeResponse.hasOwnProperty(k)) continue;
+    var kNorm = String(k).toLowerCase().trim();
+
+    // Check if this field or its eBay alias is protected by eBay
+    var isEBayProtected = ebayAspectMap.hasOwnProperty(kNorm);
+    if (!isEBayProtected) {
+      // Check if this field is the target of an eBay alias
+      for (var aliasEBay in ebayToSupportedAlias) {
+        if (ebayToSupportedAlias[aliasEBay].toLowerCase() === kNorm && ebayAspectMap.hasOwnProperty(aliasEBay)) {
+          isEBayProtected = true;
+          break;
+        }
+      }
+    }
+
+    if (isEBayProtected) continue;  // Skip Claude value: eBay value is authoritative
+    clean[k] = claudeResponse[k];
+  }
+
+  // Restoration phase with alias support
+  for (var ebayFieldNorm in ebayAspectMap) {
+    if (ebayAspectMap.hasOwnProperty(ebayFieldNorm)) {
+      var ebayValue = ebayAspectMap[ebayFieldNorm];
+      var properFieldName = null;
+
+      // Check alias first
+      if (ebayToSupportedAlias.hasOwnProperty(ebayFieldNorm)) {
+        properFieldName = ebayToSupportedAlias[ebayFieldNorm];
+      } else {
+        // Exact match
+        for (var si = 0; si < SUPPORTED.length; si++) {
+          if (SUPPORTED[si].toLowerCase() === ebayFieldNorm) {
+            properFieldName = SUPPORTED[si];
+            break;
+          }
+        }
+      }
+
+      if (properFieldName && !clean.hasOwnProperty(properFieldName)) {
+        clean[properFieldName] = String(ebayValue).substring(0, 65);
+      }
+    }
+  }
+
+  // Verify Type alias works
+  console.assert(clean['Type of Product'] === "Air Fryer", "❌ Type of Product should be Air Fryer (from eBay Type)");
+  console.assert(clean['Features'] === "Portable", "❌ Features should be Portable (Claude allowed)");
+
+  console.log("✅ PASS: Type alias mapping works");
+  console.log("   eBay 'Type' mapped to: Type of Product = " + clean['Type of Product']);
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // RUN ALL TESTS
 // ─────────────────────────────────────────────────────────────────────
 console.log('\n╔════════════════════════════════════════════════════════════╗');
@@ -481,6 +568,7 @@ try {
   test8_PowerSourceProtected();
   test9_MissingNonProtectedAllow();
   test10_RealisticNinjaUPC();
+  test11_TypeAliasMapping();
 
   console.log('\n╔════════════════════════════════════════════════════════════╗');
   console.log('║  ✅ ALL TESTS PASSED - PRECEDENCE FIX VERIFIED            ║');
