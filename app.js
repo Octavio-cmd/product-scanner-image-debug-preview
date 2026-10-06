@@ -9613,6 +9613,21 @@ async function psGenerateSpecifics(source){
   var prefilled = psPreFillSpecifics(titleForAI, catForAI, brandForAI, cur.prod);
   console.log('🔍 Pre-parsed specifics:', prefilled);
 
+  // PHASE 0: Build authoritative eBay aspect map (FIX: Precedence from eBay data)
+  // This tracks which fields eBay explicitly provided, so Claude cannot override them
+  var ebayAspectMap = {};
+  if (cur.prod && cur.prod.aspects) {
+    var aspectsArray = Array.isArray(cur.prod.aspects) ? cur.prod.aspects : [];
+    for (var ai = 0; ai < aspectsArray.length; ai++) {
+      var asp = aspectsArray[ai];
+      if (asp && asp.name && asp.value) {
+        var aspNameNorm = String(asp.name).toLowerCase().trim();
+        ebayAspectMap[aspNameNorm] = asp.value; // Store both normalized key and original value
+      }
+    }
+  }
+  console.log('🔷 eBay aspect map:', ebayAspectMap);
+
   // Lista de specifics que el CSV soporta (columnas comunes ampliadas).
   // Claude llena SOLO los que apliquen al producto; deja el resto fuera.
   var SUPPORTED = [
@@ -9719,6 +9734,19 @@ async function psGenerateSpecifics(source){
         continue; // Skip: immutable field already cached from canonical, don't override
       }
 
+      // FIX: Protect all eBay-provided fields (PHASE 2: Protect eBay-provided fields)
+      // If eBay localizedAspects provided this field, Claude cannot override it
+      var kNorm = String(k).toLowerCase().trim();
+      if (ebayAspectMap.hasOwnProperty(kNorm)) {
+        continue; // Skip Claude value: eBay value is authoritative
+      }
+
+      // FIX: Special rule for Product Line (PHASE 3: Stricter Product Line behavior)
+      // If eBay did NOT provide Product Line, reject Claude's attempt to fill it
+      if (k === 'Product Line' && !ebayAspectMap['product line']) {
+        continue; // Skip Claude Product Line if eBay didn't provide one
+      }
+
       var val = String(parsed[k] == null ? '' : parsed[k]).trim();
       if(val && SUPPORTED.indexOf(k) !== -1){
         clean[k] = val.substring(0, 65); // eBay limita valores de specifics
@@ -9769,6 +9797,31 @@ async function psGenerateSpecifics(source){
     // Ensure structured Product Line (highest confidence) is always preserved
     if (structuredProductLine) {
       clean['Product Line'] = structuredProductLine;
+    }
+
+    // FIX: Restore all eBay-provided fields that aren't already in clean (PHASE 2 restoration)
+    // This ensures that eBay data is preserved even if not in prefilled and Claude was skipped
+    for (var ebayFieldNorm in ebayAspectMap) {
+      if (ebayAspectMap.hasOwnProperty(ebayFieldNorm)) {
+        var ebayValue = ebayAspectMap[ebayFieldNorm];
+        // Find the proper case-sensitive field name from SUPPORTED
+        var properFieldName = null;
+        for (var si = 0; si < SUPPORTED.length; si++) {
+          if (SUPPORTED[si].toLowerCase() === ebayFieldNorm) {
+            properFieldName = SUPPORTED[si];
+            break;
+          }
+        }
+        // If field exists in SUPPORTED and not already in clean, restore eBay value
+        if (properFieldName && !clean.hasOwnProperty(properFieldName)) {
+          clean[properFieldName] = String(ebayValue).substring(0, 65);
+        }
+      }
+    }
+
+    // FIX: Ensure Product Line stays empty if eBay didn't provide it (PHASE 3 enforcement)
+    if (!ebayAspectMap['product line'] && clean.hasOwnProperty('Product Line')) {
+      delete clean['Product Line'];
     }
 
     // Filtrar valores inventados antes de guardar (ver psScrubSpecs).
