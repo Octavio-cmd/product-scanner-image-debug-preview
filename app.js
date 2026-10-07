@@ -2459,12 +2459,124 @@ async function clRemoveBackground(file, onStatus){
   perfMarks.uploadStart = performance.now();
   const imgbbKey = localStorage.getItem('savvy_imgbb_key') || DEFAULT_IMGBB_KEY;
   let finalUrl = cleanUrl;
+  let uploadAttempted = false;
+  let uploadSucceeded = false;
+  let uploadedUrl = null;
   if (imgbbKey) {
+    uploadAttempted = true;
     const uploaded = await clUploadPhotoToImgBB(cleanUrl, imgbbKey, 'photo');
-    if (uploaded) finalUrl = uploaded;
+    if (uploaded) {
+      uploadSucceeded = true;
+      uploadedUrl = uploaded;
+      finalUrl = uploaded;
+    }
   }
   perfMarks.uploadEnd = performance.now();
   console.log('[PERF][PHOTO] remote-upload: ' + Math.round(perfMarks.uploadEnd - perfMarks.uploadStart) + ' ms');
+
+  // STAGE 3B DIAGNOSTIC: Compare localUrl (cleanUrl) vs finalUrl after upload + A/B load test
+  if (_psImageDebugEnabled) {
+    // A/B IMAGE LOAD TEST: Test both URLs independently
+    let localLoadResult = { status: 'untested', loaded: false, width: 0, height: 0, error: null };
+    let finalLoadResult = { status: 'untested', loaded: false, width: 0, height: 0, error: null };
+
+    try {
+      // Test localUrl (data URL)
+      const localImg = new Image();
+      const localLoadPromise = new Promise((resolve) => {
+        localImg.onload = function() {
+          localLoadResult = {
+            status: 'loaded',
+            loaded: true,
+            width: this.naturalWidth,
+            height: this.naturalHeight,
+            error: null
+          };
+          resolve();
+        };
+        localImg.onerror = function() {
+          localLoadResult = {
+            status: 'error',
+            loaded: false,
+            width: 0,
+            height: 0,
+            error: 'Image load failed'
+          };
+          resolve();
+        };
+        localImg.src = cleanUrl;
+      });
+
+      // Test finalUrl (may be data URL or bucket URL)
+      const finalImg = new Image();
+      const finalLoadPromise = new Promise((resolve) => {
+        finalImg.onload = function() {
+          finalLoadResult = {
+            status: 'loaded',
+            loaded: true,
+            width: this.naturalWidth,
+            height: this.naturalHeight,
+            error: null
+          };
+          resolve();
+        };
+        finalImg.onerror = function() {
+          finalLoadResult = {
+            status: 'error',
+            loaded: false,
+            width: 0,
+            height: 0,
+            error: 'Image load failed'
+          };
+          resolve();
+        };
+        finalImg.src = finalUrl;
+      });
+
+      // Wait for both tests with 5-second timeout
+      await Promise.race([
+        Promise.all([localLoadPromise, finalLoadPromise]),
+        new Promise(resolve => setTimeout(resolve, 5000))
+      ]);
+    } catch(e) {
+      console.error('A/B load test error:', e);
+    }
+
+    _psImageDebugData.stages.stage3b_urls = {
+      timestamp: new Date().toISOString(),
+      localUrl: {
+        type: typeof cleanUrl,
+        prefix: cleanUrl.substring(0, 80),
+        length: cleanUrl.length,
+        isDataUrl: cleanUrl.startsWith('data:'),
+        isHttpUrl: cleanUrl.startsWith('http')
+      },
+      finalUrl: {
+        type: typeof finalUrl,
+        prefix: finalUrl.substring(0, 120),
+        length: finalUrl.length,
+        isDataUrl: finalUrl.startsWith('data:'),
+        isHttpUrl: finalUrl.startsWith('http')
+      },
+      uploadedUrl: uploadedUrl ? {
+        type: typeof uploadedUrl,
+        prefix: uploadedUrl.substring(0, 120),
+        length: uploadedUrl.length,
+        isHttpUrl: uploadedUrl.startsWith('http')
+      } : null,
+      urlsSame: finalUrl === cleanUrl,
+      upload: {
+        attempted: uploadAttempted,
+        succeeded: uploadSucceeded,
+        source: uploadSucceeded ? 'bucket_url' : 'local_data_url'
+      },
+      loadTests: {
+        localUrl: localLoadResult,
+        finalUrl: finalLoadResult
+      }
+    };
+    _psImageDebugLog('STAGE 3B - FINAL URL COMPARISON & LOAD TEST', _psImageDebugData.stages.stage3b_urls);
+  }
 
   perfMarks.previewStart = performance.now();
   perfMarks.previewEnd = performance.now();

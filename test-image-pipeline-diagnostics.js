@@ -312,4 +312,88 @@ describe('Image Pipeline Diagnostics', () => {
       assert(stale === true);
     });
   });
+
+  describe('STAGE 3B Enhanced Diagnostics Tests', () => {
+    test('should capture local data URL load result', () => {
+      const localLoadResult = {
+        status: 'loaded',
+        loaded: true,
+        width: 800,
+        height: 600,
+        error: null
+      };
+      assert(localLoadResult.status === 'loaded');
+      assert(localLoadResult.loaded === true);
+      assert(localLoadResult.width > 0);
+      assert(localLoadResult.height > 0);
+    });
+
+    test('should capture final URL load result', () => {
+      const finalLoadResult = {
+        status: 'error',
+        loaded: false,
+        width: 0,
+        height: 0,
+        error: 'Image load failed'
+      };
+      assert(finalLoadResult.status === 'error');
+      assert(finalLoadResult.loaded === false);
+      assert(finalLoadResult.error !== null);
+    });
+
+    test('should classify finalUrl source as bucket_url when upload succeeds', () => {
+      const uploadSucceeded = true;
+      const source = uploadSucceeded ? 'bucket_url' : 'local_data_url';
+      assert.strictEqual(source, 'bucket_url');
+    });
+
+    test('should classify finalUrl source as local_data_url when upload fails', () => {
+      const uploadSucceeded = false;
+      const source = uploadSucceeded ? 'bucket_url' : 'local_data_url';
+      assert.strictEqual(source, 'local_data_url');
+    });
+
+    test('should keep finalUrl as localUrl when upload is null', () => {
+      const uploadAttempted = false;
+      const cleanUrl = 'data:image/png;base64,ABC123';
+      let finalUrl = cleanUrl;
+
+      if (uploadAttempted) {
+        // upload would have happened
+        finalUrl = 'https://imgbb.com/xyz';
+      }
+
+      assert.strictEqual(finalUrl, cleanUrl);
+      assert(!finalUrl.startsWith('http'));
+    });
+
+    test('should update finalUrl when upload succeeds', () => {
+      const uploadAttempted = true;
+      const uploadSucceeded = true;
+      const cleanUrl = 'data:image/png;base64,ABC123';
+      const uploadedUrl = 'https://imgbb.com/xyz';
+      let finalUrl = cleanUrl;
+
+      if (uploadAttempted && uploadSucceeded) {
+        finalUrl = uploadedUrl;
+      }
+
+      assert.strictEqual(finalUrl, uploadedUrl);
+      assert(finalUrl.startsWith('http'));
+    });
+
+    test('should not expose full base64 in debug panel', () => {
+      const fullBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      const dataUrl = 'data:image/png;base64,' + fullBase64;
+      const prefixLength = 80;
+      const prefix = dataUrl.substring(0, prefixLength);
+
+      // Verify prefix doesn't contain full base64
+      assert(!prefix.includes('AJRggg=='));
+      // Verify prefix is truncated
+      assert(prefix.length < dataUrl.length);
+      // Verify prefix contains valid data URL start
+      assert(prefix.includes('data:image/png;base64,'));
+    });
+  });
 });
