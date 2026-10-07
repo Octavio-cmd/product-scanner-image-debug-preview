@@ -213,6 +213,173 @@ async function psValidateImageUrl(url, timeoutMs = 5000) {
   });
 }
 
+// ── PLAIN vs CORS IMAGE TEST (Diagnostic Only)
+async function _psTestRemoteImageLoading() {
+  if (!_psImageDebugEnabled) {
+    alert('Debug mode not enabled');
+    return;
+  }
+
+  // Get the current final URL from debug data
+  const finalUrl = _psImageDebugData.stages.stage3b_urls?.finalUrl?.prefix ||
+                   _psImageDebugData.stages.stage3b_urls?.finalUrl?.isHttpUrl &&
+                   _psImageDebugData.stages.stage3b_urls?.finalUrl?.prefix;
+
+  if (!finalUrl || !finalUrl.startsWith('http')) {
+    alert('No remote URL available to test. Upload a photo first.');
+    return;
+  }
+
+  const results = {
+    timestamp: new Date().toISOString(),
+    url: finalUrl,
+    tests: {}
+  };
+
+  // TEST A: Plain Image (no crossOrigin)
+  results.tests.plainImage = await new Promise(resolve => {
+    const img = new Image();
+    const timeout = setTimeout(() => {
+      resolve({
+        loaded: false,
+        naturalWidth: 0,
+        naturalHeight: 0,
+        error: 'timeout'
+      });
+    }, 5000);
+
+    img.onload = function() {
+      clearTimeout(timeout);
+      resolve({
+        loaded: true,
+        naturalWidth: img.naturalWidth,
+        naturalHeight: img.naturalHeight,
+        error: null
+      });
+    };
+
+    img.onerror = function() {
+      clearTimeout(timeout);
+      resolve({
+        loaded: false,
+        naturalWidth: 0,
+        naturalHeight: 0,
+        error: 'onerror'
+      });
+    };
+
+    img.src = finalUrl;
+  });
+
+  // TEST B: CORS Image (with crossOrigin="anonymous")
+  results.tests.corsImage = await new Promise(resolve => {
+    const img = new Image();
+    const timeout = setTimeout(() => {
+      resolve({
+        loaded: false,
+        naturalWidth: 0,
+        naturalHeight: 0,
+        error: 'timeout'
+      });
+    }, 5000);
+
+    img.onload = function() {
+      clearTimeout(timeout);
+      resolve({
+        loaded: true,
+        naturalWidth: img.naturalWidth,
+        naturalHeight: img.naturalHeight,
+        error: null
+      });
+    };
+
+    img.onerror = function() {
+      clearTimeout(timeout);
+      resolve({
+        loaded: false,
+        naturalWidth: 0,
+        naturalHeight: 0,
+        error: 'onerror'
+      });
+    };
+
+    img.crossOrigin = 'anonymous';
+    img.src = finalUrl;
+  });
+
+  // TEST C: Direct browser open (user will report result)
+  results.tests.directBrowserOpen = {
+    method: 'manual',
+    instructions: 'Check browser tab for image, 403 error, etc.',
+    buttonClicked: false
+  };
+
+  // Store and display results
+  _psImageDebugData.stages.remoteImageLoadTests = results;
+
+  // Show results in debug panel
+  const panel = document.getElementById('ps-debug-panel');
+  const content = document.getElementById('ps-debug-content');
+
+  let text = 'REMOTE IMAGE LOADING TEST RESULTS\n\n';
+  text += 'URL Tested: ' + finalUrl.substring(0, 80) + '...\n\n';
+
+  text += '═══════════════════════════════════════════\n';
+  text += 'TEST A: Plain Image (NO crossOrigin)\n';
+  text += '═══════════════════════════════════════════\n';
+  text += 'Loaded: ' + (results.tests.plainImage.loaded ? '✓ YES' : '✗ NO') + '\n';
+  text += 'Dimensions: ' + results.tests.plainImage.naturalWidth + 'x' + results.tests.plainImage.naturalHeight + ' px\n';
+  if (results.tests.plainImage.error) {
+    text += 'Error: ' + results.tests.plainImage.error + '\n';
+  }
+  text += '\n';
+
+  text += '═══════════════════════════════════════════\n';
+  text += 'TEST B: CORS Image (crossOrigin="anonymous")\n';
+  text += '═══════════════════════════════════════════\n';
+  text += 'Loaded: ' + (results.tests.corsImage.loaded ? '✓ YES' : '✗ NO') + '\n';
+  text += 'Dimensions: ' + results.tests.corsImage.naturalWidth + 'x' + results.tests.corsImage.naturalHeight + ' px\n';
+  if (results.tests.corsImage.error) {
+    text += 'Error: ' + results.tests.corsImage.error + '\n';
+  }
+  text += '\n';
+
+  text += '═══════════════════════════════════════════\n';
+  text += 'TEST C: Direct Browser Open\n';
+  text += '═══════════════════════════════════════════\n';
+  text += 'Click button below to open URL in new tab\n';
+  text += 'Report: Does the image display?\n\n';
+
+  text += '═══════════════════════════════════════════\n';
+  text += 'INTERPRETATION\n';
+  text += '═══════════════════════════════════════════\n';
+
+  if (results.tests.plainImage.loaded && !results.tests.corsImage.loaded) {
+    text += '→ CORS ISSUE CONFIRMED\n';
+    text += '  Plain Image works, CORS Image fails\n';
+    text += '  Classification: F - CORS only\n';
+  } else if (!results.tests.plainImage.loaded && !results.tests.corsImage.loaded) {
+    text += '→ NOT CORS-ONLY\n';
+    text += '  Both tests failed - investigate:\n';
+    text += '  - Expired/invalid presigned URL\n';
+    text += '  - Object missing from bucket\n';
+    text += '  - Wrong key or MIME type\n';
+    text += '  - Network/storage permissions\n';
+  } else if (results.tests.plainImage.loaded && results.tests.corsImage.loaded) {
+    text += '→ BOTH PASS\n';
+    text += '  Issue is not image loading\n';
+    text += '  Check: browser rendering, state timing\n';
+  }
+
+  if (content) {
+    content.textContent = text;
+  }
+
+  if (panel) {
+    panel.style.display = 'flex';
+  }
+}
+
 function _psGetImageDebugSummary() {
   if (!_psImageDebugEnabled) {
     return 'Debug mode not enabled. Add ?imageDebug=1 to URL';
@@ -331,7 +498,7 @@ function _psShowImageDebugData() {
     // Header
     const header = document.createElement('div');
     header.style.cssText = 'background:#1a1a1a;border-bottom:1px solid #333;padding:10px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0';
-    header.innerHTML = '<span style="font-weight:bold">🔍 IMAGE PIPELINE DEBUG</span><div><button id="ps-debug-copy" style="background:#2196F3;border:none;color:#fff;padding:6px 12px;border-radius:4px;margin-right:8px;cursor:pointer;font-family:monospace">📋 Copy Summary</button><button id="ps-debug-close" style="background:#c0392b;border:none;color:#fff;padding:6px 12px;border-radius:4px;cursor:pointer;font-family:monospace">✕ Close</button></div>';
+    header.innerHTML = '<span style="font-weight:bold">🔍 IMAGE PIPELINE DEBUG</span><div><button id="ps-debug-test-remote" style="background:#ff9800;border:none;color:#fff;padding:6px 12px;border-radius:4px;margin-right:8px;cursor:pointer;font-family:monospace;font-size:11px">🧪 Test Remote Image</button><button id="ps-debug-copy" style="background:#2196F3;border:none;color:#fff;padding:6px 12px;border-radius:4px;margin-right:8px;cursor:pointer;font-family:monospace">📋 Copy Summary</button><button id="ps-debug-close" style="background:#c0392b;border:none;color:#fff;padding:6px 12px;border-radius:4px;cursor:pointer;font-family:monospace">✕ Close</button></div>';
     panel.appendChild(header);
 
     // Content area
@@ -345,6 +512,38 @@ function _psShowImageDebugData() {
     // Close button handler
     document.getElementById('ps-debug-close').onclick = function() {
       panel.style.display = 'none';
+    };
+
+    // Test Remote Image button handler
+    document.getElementById('ps-debug-test-remote').onclick = function() {
+      const btn = document.getElementById('ps-debug-test-remote');
+      const orig = btn.textContent;
+      btn.textContent = '⏳ Testing...';
+      btn.disabled = true;
+      _psTestRemoteImageLoading().then(() => {
+        btn.textContent = orig;
+        btn.disabled = false;
+        // Add "Open in Browser" button to results
+        const content = document.getElementById('ps-debug-content');
+        const finalUrl = _psImageDebugData.stages.stage3b_urls?.finalUrl?.prefix ||
+                        _psImageDebugData.stages.stage3b_urls?.finalUrl?.isHttpUrl &&
+                        _psImageDebugData.stages.stage3b_urls?.finalUrl?.prefix;
+        if (finalUrl && finalUrl.startsWith('http')) {
+          const div = document.createElement('div');
+          div.style.cssText = 'margin-top:16px;padding-top:16px;border-top:1px solid #444';
+          const openBtn = document.createElement('button');
+          openBtn.textContent = '🌐 Open URL in New Browser Tab (for manual verification)';
+          openBtn.style.cssText = 'background:#4CAF50;border:none;color:#fff;padding:10px 16px;border-radius:4px;cursor:pointer;font-family:monospace;width:100%;margin-bottom:8px';
+          openBtn.onclick = function() {
+            window.open(finalUrl, '_blank');
+          };
+          content.appendChild(div);
+          const br = document.createElement('pre');
+          br.textContent = '';
+          content.appendChild(br);
+          content.appendChild(openBtn);
+        }
+      });
     };
 
     // Copy button handler
