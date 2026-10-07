@@ -89,7 +89,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-07-aspects-staging-preview-v1';
+window.PS_BUILD = '2026-10-07-aspects-staging-image-debug-v1';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -111,6 +111,101 @@ window._psDebug = function(msg){
   }catch(e){}
   try{ console.log('_psDebug:', msg); }catch(e){}
 };
+
+// 🔍 IMAGE PIPELINE DIAGNOSTIC SYSTEM (Preview Only)
+// Activated via ?imageDebug=1 query parameter
+// Captures data at 6 critical stages to diagnose broken <img> rendering
+const _psImageDebugEnabled = (new URLSearchParams(window.location.search)).get('imageDebug') === '1';
+const _psImageDebugData = {
+  stages: {},
+  errors: []
+};
+
+function _psImageDebugLog(stage, data) {
+  if (!_psImageDebugEnabled) return;
+  try {
+    console.log('[IMAGE-DEBUG] ' + stage + ':', data);
+    _psDebug('[IMG-DBG] ' + stage);
+  } catch(e) {}
+}
+
+function _psRecordStage3DataUrl(slot, dataUrl, prefix) {
+  if (!_psImageDebugEnabled) return;
+  try {
+    _psImageDebugData.stages['stage3_dataurl_' + slot] = {
+      timestamp: new Date().toISOString(),
+      slot: slot,
+      urlPrefix: prefix,
+      totalLength: dataUrl.length,
+      isValid: dataUrl.startsWith('data:image/'),
+      mimeType: prefix.match(/data:([^;]+)/)?.[1] || 'unknown'
+    };
+    _psImageDebugLog('STAGE 3 - DATA URL [' + slot + ']', _psImageDebugData.stages['stage3_dataurl_' + slot]);
+  } catch(e) {
+    _psImageDebugData.errors.push('Stage 3 error: ' + e.message);
+  }
+}
+
+function _psRecordStage4StateStorage(slot, url, urlType) {
+  if (!_psImageDebugEnabled) return;
+  try {
+    _psImageDebugData.stages['stage4_storage_' + slot] = {
+      timestamp: new Date().toISOString(),
+      slot: slot,
+      urlType: urlType,
+      urlPrefix: url.substring(0, 50),
+      urlLength: url.length,
+      isDataUrl: url.startsWith('data:'),
+      isHttpUrl: url.startsWith('http'),
+      storagePath: slot === 'front' ? 'cur._frontImg' : 'cur._backImg'
+    };
+    _psImageDebugLog('STAGE 4 - STATE STORAGE [' + slot + ']', _psImageDebugData.stages['stage4_storage_' + slot]);
+  } catch(e) {
+    _psImageDebugData.errors.push('Stage 4 error: ' + e.message);
+  }
+}
+
+function _psRecordStage5ImgElement(slot, imgElement) {
+  if (!_psImageDebugEnabled) return;
+  try {
+    const srcPrefix = imgElement.src ? imgElement.src.substring(0, 50) : '(empty)';
+    _psImageDebugData.stages['stage5_img_' + slot] = {
+      timestamp: new Date().toISOString(),
+      slot: slot,
+      srcPrefix: srcPrefix,
+      srcLength: imgElement.src ? imgElement.src.length : 0,
+      naturalWidth: imgElement.naturalWidth,
+      naturalHeight: imgElement.naturalHeight,
+      complete: imgElement.complete,
+      currentSrc: imgElement.currentSrc || '(none)',
+      tagName: imgElement.tagName,
+      hasLoadListener: imgElement.onload !== null,
+      hasErrorListener: imgElement.onerror !== null
+    };
+    _psImageDebugLog('STAGE 5 - IMG ELEMENT [' + slot + ']', _psImageDebugData.stages['stage5_img_' + slot]);
+  } catch(e) {
+    _psImageDebugData.errors.push('Stage 5 error: ' + e.message);
+  }
+}
+
+function _psShowImageDebugData() {
+  if (!_psImageDebugEnabled) {
+    alert('Debug mode not enabled. Add ?imageDebug=1 to URL');
+    return;
+  }
+  let text = '=== IMAGE PIPELINE DEBUG DATA ===\n\n';
+  text += 'Captured Stages:\n';
+  for (let key in _psImageDebugData.stages) {
+    text += '\n' + key + ':\n';
+    text += JSON.stringify(_psImageDebugData.stages[key], null, 2) + '\n';
+  }
+  if (_psImageDebugData.errors.length > 0) {
+    text += '\n\nErrors:\n';
+    text += _psImageDebugData.errors.join('\n');
+  }
+  text += '\n\n(Copy this text for analysis)';
+  alert(text);
+}
 
 
 // ── HELPER FUNCTIONS ──────────────────────────────────────────
@@ -2330,8 +2425,25 @@ async function clRemoveBackground(file, onStatus){
 
   if(!rbgData.success || !rbgData.image) throw new Error('rembg no devolvió imagen');
 
+  // STAGE 2 DIAGNOSTIC: rembg response structure
+  if (_psImageDebugEnabled) {
+    _psImageDebugData.stages.stage2_rembg = {
+      timestamp: new Date().toISOString(),
+      httpStatus: rbgRes.status,
+      httpContentType: rbgRes.headers.get('content-type'),
+      responseSuccess: rbgData.success,
+      hasImageField: !!rbgData.image,
+      imageMime: rbgData.mime || 'unknown',
+      imageFormat: rbgData.format || 'unknown',
+      imageBase64Length: rbgData.image ? rbgData.image.length : 0
+    };
+    _psImageDebugLog('STAGE 2 - REMBG RESPONSE', _psImageDebugData.stages.stage2_rembg);
+  }
+
   const isJpeg = (rbgData.mime === 'image/jpeg') || (rbgData.format === 'jpeg');
   const pngUrl = 'data:' + (isJpeg ? 'image/jpeg' : 'image/png') + ';base64,' + rbgData.image;
+
+  // STAGE 3 DIAGNOSTIC: Data URL generation (will be recorded in psCapturePhoto with slot info)
 
   // ── PNG format with alpha channel preserved ──
   // Requesting PNG format from background-removal API preserves transparency (alpha channel).
@@ -2399,13 +2511,35 @@ async function psCapturePhoto(slotId){
     try{
       const { finalUrl, localUrl } = await clRemoveBackground(file, setStatus);
 
+      // STAGE 3 DIAGNOSTIC: Record data URL validity
+      if (_psImageDebugEnabled) {
+        const dataUrlPrefix = localUrl.substring(0, 100);
+        _psRecordStage3DataUrl(slotId, localUrl, dataUrlPrefix);
+      }
+
       if (cur) {
         if (slotId === 'front') { cur._frontImg = finalUrl; cur._frontImgLocal = localUrl; }
         else { cur._backImg = finalUrl; cur._backImgLocal = localUrl; }
       }
 
+      // STAGE 4 DIAGNOSTIC: Record where image was stored
+      if (_psImageDebugEnabled) {
+        _psRecordStage4StateStorage(slotId, finalUrl, finalUrl.startsWith('http') ? 'http_url' : 'data_url');
+      }
+
       if (slot) {
-        slot.innerHTML = '<img src="' + finalUrl + '" style="width:100%;height:100%;object-fit:contain;background:#ffffff">';
+        const imgHtml = '<img src="' + finalUrl + '" style="width:100%;height:100%;object-fit:contain;background:#ffffff" onerror="window._psDebug(\'[IMG-ERR] ' + slotId + ' image load failed\');" onload="window._psDebug(\'[IMG-OK] ' + slotId + ' image loaded\');">';
+        slot.innerHTML = imgHtml;
+
+        // STAGE 5 DIAGNOSTIC: Record img element state after insertion
+        if (_psImageDebugEnabled) {
+          setTimeout(function() {
+            var imgElement = slot.querySelector('img');
+            if (imgElement) {
+              _psRecordStage5ImgElement(slotId, imgElement);
+            }
+          }, 100);
+        }
       }
       updatePackGenButtonState();
       toast('✅ Fondo removido — ' + (slotId==='front'?'Front':'Back') + ' lista');

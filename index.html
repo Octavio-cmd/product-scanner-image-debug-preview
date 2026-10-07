@@ -609,7 +609,14 @@
 
 <button class="fab" id="fab">📋 CSV <div class="fbc" id="fabN">0</div></button>
 
+<script>
+// Show debug button only when ?imageDebug=1
+if ((new URLSearchParams(window.location.search)).get('imageDebug') === '1') {
+  document.write('<button id="debugBtn" style="position:fixed;bottom:28px;right:90px;background:#c0392b;border:none;border-radius:50px;padding:13px 18px;color:#fff;font-size:12px;font-weight:800;cursor:pointer;z-index:200" onclick="window._psShowImageDebugData()">🔍 Debug Data</button>');
+}
+</script>
+
 <script src="multipack-fixes.js?v=2026-09-11-multipack-count-v1"></script>
-<script src="app.js?v=2026-10-07-aspects-staging-preview-v1"></script>
+<script src="app.js?v=2026-10-07-aspects-staging-image-debug-v1"></script>
 </body>
 </html>
