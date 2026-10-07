@@ -89,7 +89,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-08-29-camera-callback-v5';
+window.PS_BUILD = '2026-10-07-aspects-staging-preview-v1';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
