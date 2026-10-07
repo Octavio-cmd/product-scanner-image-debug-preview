@@ -188,23 +188,160 @@ function _psRecordStage5ImgElement(slot, imgElement) {
   }
 }
 
+function _psGetImageDebugSummary() {
+  if (!_psImageDebugEnabled) {
+    return 'Debug mode not enabled. Add ?imageDebug=1 to URL';
+  }
+
+  const s = _psImageDebugData.stages;
+  let text = 'IMAGE DEBUG SUMMARY\n\n';
+
+  // REMBG
+  if (s.stage2_rembg) {
+    text += '📤 REMBG\n';
+    text += '  Status: ' + (s.stage2_rembg.responseSuccess ? '✓ OK' : '✗ FAILED') + '\n';
+    text += '  MIME: ' + s.stage2_rembg.imageMime + '\n';
+    text += '  Base64 Length: ' + s.stage2_rembg.imageBase64Length + ' bytes\n\n';
+  }
+
+  // LOCAL URL (from stage3b)
+  if (s.stage3b_urls) {
+    text += '🖼️ LOCAL URL\n';
+    const local = s.stage3b_urls.localUrl;
+    text += '  Type: ' + local.type + '\n';
+    text += '  Prefix: data:image/png;base64\n';
+    text += '  Length: ' + local.length + ' bytes\n';
+    const localLoad = s.stage3b_urls.loadTests?.localUrl || {};
+    text += '  Load Status: ' + (localLoad.loaded ? '✓ LOADED' : '✗ FAILED') + '\n';
+    if (localLoad.width > 0) {
+      text += '  Dimensions: ' + localLoad.width + 'x' + localLoad.height + ' px\n';
+    }
+    text += '\n';
+  }
+
+  // UPLOAD
+  if (s.stage3b_urls) {
+    text += '📡 UPLOAD\n';
+    text += '  Attempted: ' + (s.stage3b_urls.upload.attempted ? 'Yes' : 'No') + '\n';
+    text += '  Succeeded: ' + (s.stage3b_urls.upload.succeeded ? 'Yes' : 'No') + '\n';
+    text += '  Source: ' + s.stage3b_urls.upload.source + '\n\n';
+  }
+
+  // FINAL URL (from stage3b)
+  if (s.stage3b_urls) {
+    text += '🔗 FINAL URL\n';
+    const final = s.stage3b_urls.finalUrl;
+    text += '  Type: ' + final.type + '\n';
+    if (final.isHttpUrl) {
+      text += '  Prefix: ' + final.prefix.substring(0, 60) + '...\n';
+    } else {
+      text += '  Prefix: data:image/png;base64\n';
+    }
+    text += '  Length: ' + final.length + ' bytes\n';
+    const finalLoad = s.stage3b_urls.loadTests?.finalUrl || {};
+    text += '  Load Status: ' + (finalLoad.loaded ? '✓ LOADED' : '✗ FAILED') + '\n';
+    if (finalLoad.width > 0) {
+      text += '  Dimensions: ' + finalLoad.width + 'x' + finalLoad.height + ' px\n';
+    }
+    text += '\n';
+  }
+
+  // VISIBLE IMG ELEMENT (from stage5)
+  const stage5Keys = Object.keys(s).filter(k => k.startsWith('stage5_img_'));
+  if (stage5Keys.length > 0) {
+    text += '👁️ VISIBLE IMG ELEMENT\n';
+    for (const key of stage5Keys) {
+      const img = s[key];
+      text += '  Slot: ' + img.slot + '\n';
+      text += '  Src Type: ' + (img.srcPrefix === '(empty)' ? 'EMPTY' : 'SET') + '\n';
+      text += '  Complete: ' + (img.complete ? 'Yes' : 'No') + '\n';
+      text += '  Dimensions: ' + img.naturalWidth + 'x' + img.naturalHeight + ' px\n';
+      text += '  Listeners: load=' + (img.hasLoadListener ? 'Yes' : 'No') + ', error=' + (img.hasErrorListener ? 'Yes' : 'No') + '\n';
+    }
+    text += '\n';
+  }
+
+  // ROOT CAUSE HINT
+  if (s.stage3b_urls && s.stage3b_urls.loadTests) {
+    text += '💡 ROOT CAUSE HINT\n';
+    const localOk = s.stage3b_urls.loadTests.localUrl?.loaded === true;
+    const finalOk = s.stage3b_urls.loadTests.finalUrl?.loaded === true;
+    const visibleOk = stage5Keys.some(k => s[k].naturalWidth > 0);
+
+    if (localOk && !finalOk) {
+      text += '  ⚠️ Remote upload URL FAILED\n';
+      text += '     Local data URL loads OK\n';
+      text += '     But bucket URL won\'t load\n';
+      text += '     → Check ImgBB service, CORS, URL format\n';
+    } else if (localOk && finalOk && !visibleOk) {
+      text += '  ⚠️ DOM/render FAILURE\n';
+      text += '     Both URLs load OK\n';
+      text += '     But visible image is broken\n';
+      text += '     → Check state update timing, canvas ops\n';
+    } else if (!localOk && !finalOk) {
+      text += '  ⚠️ Local image/data PROBLEM\n';
+      text += '     Data URL generation failed\n';
+      text += '     → Check rembg response, base64 integrity\n';
+    } else if (localOk && finalOk && visibleOk) {
+      text += '  ✓ All tests pass - image should be visible\n';
+    }
+  }
+
+  return text;
+}
+
 function _psShowImageDebugData() {
   if (!_psImageDebugEnabled) {
     alert('Debug mode not enabled. Add ?imageDebug=1 to URL');
     return;
   }
-  let text = '=== IMAGE PIPELINE DEBUG DATA ===\n\n';
-  text += 'Captured Stages:\n';
-  for (let key in _psImageDebugData.stages) {
-    text += '\n' + key + ':\n';
-    text += JSON.stringify(_psImageDebugData.stages[key], null, 2) + '\n';
+
+  // Create or show debug panel
+  let panel = document.getElementById('ps-debug-panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'ps-debug-panel';
+    panel.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.95);z-index:999999;display:flex;flex-direction:column;font-family:monospace;font-size:12px;color:#0f0';
+
+    // Header
+    const header = document.createElement('div');
+    header.style.cssText = 'background:#1a1a1a;border-bottom:1px solid #333;padding:10px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0';
+    header.innerHTML = '<span style="font-weight:bold">🔍 IMAGE PIPELINE DEBUG</span><div><button id="ps-debug-copy" style="background:#2196F3;border:none;color:#fff;padding:6px 12px;border-radius:4px;margin-right:8px;cursor:pointer;font-family:monospace">📋 Copy Summary</button><button id="ps-debug-close" style="background:#c0392b;border:none;color:#fff;padding:6px 12px;border-radius:4px;cursor:pointer;font-family:monospace">✕ Close</button></div>';
+    panel.appendChild(header);
+
+    // Content area
+    const content = document.createElement('div');
+    content.id = 'ps-debug-content';
+    content.style.cssText = 'flex:1;overflow-y:auto;padding:12px;white-space:pre-wrap;word-break:break-all;line-height:1.4';
+    panel.appendChild(content);
+
+    document.body.appendChild(panel);
+
+    // Close button handler
+    document.getElementById('ps-debug-close').onclick = function() {
+      panel.style.display = 'none';
+    };
+
+    // Copy button handler
+    document.getElementById('ps-debug-copy').onclick = function() {
+      const summary = _psGetImageDebugSummary();
+      const textArea = document.createElement('textarea');
+      textArea.value = summary;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      // Visual feedback
+      const btn = document.getElementById('ps-debug-copy');
+      const orig = btn.textContent;
+      btn.textContent = '✓ Copied!';
+      setTimeout(function() { btn.textContent = orig; }, 2000);
+    };
   }
-  if (_psImageDebugData.errors.length > 0) {
-    text += '\n\nErrors:\n';
-    text += _psImageDebugData.errors.join('\n');
-  }
-  text += '\n\n(Copy this text for analysis)';
-  alert(text);
+
+  // Update content
+  document.getElementById('ps-debug-content').textContent = _psGetImageDebugSummary();
+  panel.style.display = 'flex';
 }
 
 
