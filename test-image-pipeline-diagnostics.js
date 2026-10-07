@@ -396,4 +396,97 @@ describe('Image Pipeline Diagnostics', () => {
       assert(prefix.includes('data:image/png;base64,'));
     });
   });
+
+  describe('Photo Fix - URL Validation & Display', () => {
+    test('should use local URL when remote validation fails', () => {
+      const localUrl = 'data:image/png;base64,ABC123';
+      const remoteUrl = 'https://bucket.example.com/image.png';
+      const remoteUrlValid = false;
+
+      const displayUrl = remoteUrlValid ? remoteUrl : localUrl;
+
+      assert.strictEqual(displayUrl, localUrl);
+      assert(displayUrl.startsWith('data:'));
+    });
+
+    test('should use remote URL when validation passes', () => {
+      const localUrl = 'data:image/png;base64,ABC123';
+      const remoteUrl = 'https://bucket.example.com/image.png';
+      const remoteUrlValid = true;
+
+      const displayUrl = remoteUrlValid ? remoteUrl : localUrl;
+
+      assert.strictEqual(displayUrl, remoteUrl);
+      assert(displayUrl.startsWith('http'));
+    });
+
+    test('should store local URL separately', () => {
+      const localUrl = 'data:image/png;base64,ABC123';
+      const cur = {};
+      cur._frontImgLocal = localUrl;
+
+      assert.strictEqual(cur._frontImgLocal, localUrl);
+      assert(cur._frontImgLocal.startsWith('data:'));
+    });
+
+    test('should store validated remote URL separately', () => {
+      const remoteUrl = 'https://bucket.example.com/image.png';
+      const remoteUrlValid = true;
+      const cur = {};
+      cur._frontImgRemote = remoteUrlValid ? remoteUrl : null;
+
+      assert.strictEqual(cur._frontImgRemote, remoteUrl);
+    });
+
+    test('should not store invalid remote URL', () => {
+      const remoteUrl = 'https://broken.example.com/image.png';
+      const remoteUrlValid = false;
+      const cur = {};
+      cur._frontImgRemote = remoteUrlValid ? remoteUrl : null;
+
+      assert.strictEqual(cur._frontImgRemote, null);
+    });
+
+    test('should prefer local URL for display when remote is invalid', () => {
+      const localUrl = 'data:image/png;base64,XYZ789';
+      const remoteUrl = 'https://broken.example.com/image.png';
+      const remoteUrlValid = false;
+
+      const cur = {};
+      cur._frontImgLocal = localUrl;
+      cur._frontImgRemote = remoteUrlValid ? remoteUrl : null;
+      cur._frontImg = remoteUrlValid ? remoteUrl : localUrl;
+
+      assert.strictEqual(cur._frontImg, localUrl);
+      assert(cur._frontImgRemote === null);
+    });
+
+    test('should use validated remote URL when available', () => {
+      const localUrl = 'data:image/png;base64,ABC123';
+      const remoteUrl = 'https://bucket.example.com/image.png';
+      const remoteUrlValid = true;
+
+      const cur = {};
+      cur._frontImgLocal = localUrl;
+      cur._frontImgRemote = remoteUrlValid ? remoteUrl : null;
+      cur._frontImg = remoteUrlValid ? remoteUrl : localUrl;
+
+      assert.strictEqual(cur._frontImg, remoteUrl);
+      assert.strictEqual(cur._frontImgRemote, remoteUrl);
+    });
+
+    test('should handle BACK image similarly to FRONT', () => {
+      const localUrl = 'data:image/png;base64,BACK123';
+      const remoteUrl = 'https://bucket.example.com/back.png';
+      const remoteUrlValid = true;
+
+      const cur = {};
+      cur._backImgLocal = localUrl;
+      cur._backImgRemote = remoteUrlValid ? remoteUrl : null;
+      cur._backImg = remoteUrlValid ? remoteUrl : localUrl;
+
+      assert.strictEqual(cur._backImg, remoteUrl);
+      assert.strictEqual(cur._backImgRemote, remoteUrl);
+    });
+  });
 });

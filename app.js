@@ -188,6 +188,31 @@ function _psRecordStage5ImgElement(slot, imgElement) {
   }
 }
 
+// ── URL VALIDATION ──
+// Tests if an image URL is actually loadable (not broken/404/CORS)
+async function psValidateImageUrl(url, timeoutMs = 5000) {
+  if (!url) return false;
+  return new Promise((resolve) => {
+    const img = new Image();
+    const timeout = setTimeout(() => { resolve(false); }, timeoutMs);
+
+    img.onload = function() {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    img.onerror = function() {
+      clearTimeout(timeout);
+      resolve(false);
+    };
+
+    // Crossorigin for external URLs
+    if (url.startsWith('http')) {
+      img.crossOrigin = 'anonymous';
+    }
+    img.src = url;
+  });
+}
+
 function _psGetImageDebugSummary() {
   if (!_psImageDebugEnabled) {
     return 'Debug mode not enabled. Add ?imageDebug=1 to URL';
@@ -2766,18 +2791,35 @@ async function psCapturePhoto(slotId){
         _psRecordStage3DataUrl(slotId, localUrl, dataUrlPrefix);
       }
 
+      // REMOTE URL VALIDATION: Test if remote URL is actually loadable
+      let remoteUrlValid = false;
+      if (finalUrl.startsWith('http')) {
+        remoteUrlValid = await psValidateImageUrl(finalUrl, 5000);
+      }
+
+      // DISPLAY URL: Use local (validated) data URL for visible display
+      // Store remote (if valid) separately
+      const displayUrl = remoteUrlValid ? finalUrl : localUrl;
+
       if (cur) {
-        if (slotId === 'front') { cur._frontImg = finalUrl; cur._frontImgLocal = localUrl; }
-        else { cur._backImg = finalUrl; cur._backImgLocal = localUrl; }
+        if (slotId === 'front') {
+          cur._frontImgLocal = localUrl;
+          cur._frontImgRemote = remoteUrlValid ? finalUrl : null;
+          cur._frontImg = displayUrl; // For backward compatibility
+        } else {
+          cur._backImgLocal = localUrl;
+          cur._backImgRemote = remoteUrlValid ? finalUrl : null;
+          cur._backImg = displayUrl; // For backward compatibility
+        }
       }
 
       // STAGE 4 DIAGNOSTIC: Record where image was stored
       if (_psImageDebugEnabled) {
-        _psRecordStage4StateStorage(slotId, finalUrl, finalUrl.startsWith('http') ? 'http_url' : 'data_url');
+        _psRecordStage4StateStorage(slotId, displayUrl, displayUrl.startsWith('http') ? 'http_url' : 'data_url');
       }
 
       if (slot) {
-        const imgHtml = '<img src="' + finalUrl + '" style="width:100%;height:100%;object-fit:contain;background:#ffffff" onerror="window._psDebug(\'[IMG-ERR] ' + slotId + ' image load failed\');" onload="window._psDebug(\'[IMG-OK] ' + slotId + ' image loaded\');">';
+        const imgHtml = '<img src="' + displayUrl + '" style="width:100%;height:100%;object-fit:contain;background:#ffffff" onerror="window._psDebug(\'[IMG-ERR] ' + slotId + ' image load failed\');" onload="window._psDebug(\'[IMG-OK] ' + slotId + ' image loaded\');">';
         slot.innerHTML = imgHtml;
 
         // STAGE 5 DIAGNOSTIC: Record img element state after insertion
@@ -2801,19 +2843,34 @@ async function psCapturePhoto(slotId){
         var fallbackUrl = await clCompressImage(file, 1600, 0.92);
         // Intentar subir a ImgBB la foto original
         var imgbbKey = localStorage.getItem('savvy_imgbb_key') || DEFAULT_IMGBB_KEY;
-        var uploadedFallback = fallbackUrl;
+        var displayFallback = fallbackUrl;
+        var remoteFallback = null;
         if (imgbbKey) {
           try {
             var up = await clUploadPhotoToImgBB(fallbackUrl, imgbbKey, 'photo-fallback');
-            if (up) uploadedFallback = up;
+            if (up) {
+              // Validate remote URL
+              var remoteValid = await psValidateImageUrl(up, 5000);
+              if (remoteValid) {
+                remoteFallback = up;
+                displayFallback = up;
+              }
+            }
           } catch(e2) { /* si ImgBB también falla, usamos el dataUrl local */ }
         }
         if (cur) {
-          if (slotId === 'front') { cur._frontImg = uploadedFallback; cur._frontImgLocal = fallbackUrl; }
-          else { cur._backImg = uploadedFallback; cur._backImgLocal = fallbackUrl; }
+          if (slotId === 'front') {
+            cur._frontImgLocal = fallbackUrl;
+            cur._frontImgRemote = remoteFallback;
+            cur._frontImg = displayFallback;
+          } else {
+            cur._backImgLocal = fallbackUrl;
+            cur._backImgRemote = remoteFallback;
+            cur._backImg = displayFallback;
+          }
         }
         if (slot) {
-          slot.innerHTML = '<img src="' + uploadedFallback + '" style="width:100%;height:100%;object-fit:contain;border-radius:8px"><div style="font-size:9px;color:#ff9800;text-align:center;margin-top:2px">⚠️ sin rembg</div>';
+          slot.innerHTML = '<img src="' + displayFallback + '" style="width:100%;height:100%;object-fit:contain;border-radius:8px"><div style="font-size:9px;color:#ff9800;text-align:center;margin-top:2px">⚠️ sin rembg</div>';
         }
         updatePackGenButtonState();
       } catch(err2) {
@@ -2876,7 +2933,13 @@ function psAddExtraPhoto(){
         var el = document.getElementById('ps-extra-slot-' + idx);
         if(el) el.innerHTML = '<div style="text-align:center;padding:8px"><div class="sp" style="width:20px;height:20px;margin:0 auto 4px"></div><div style="font-size:9px;color:var(--mu)">'+msg+'</div></div>';
       });
-      cur._extraImgs[idx] = { img: finalUrl, local: localUrl, loading: false };
+      // Validate remote URL for extra photos
+      let remoteUrlValid = false;
+      if (finalUrl.startsWith('http')) {
+        remoteUrlValid = await psValidateImageUrl(finalUrl, 5000);
+      }
+      const displayExtraUrl = remoteUrlValid ? finalUrl : localUrl;
+      cur._extraImgs[idx] = { img: displayExtraUrl, local: localUrl, remote: remoteUrlValid ? finalUrl : null, loading: false };
       renderExtraPhotosUI();
       toast('✅ Foto extra ' + (idx+1) + ' lista');
     }catch(err){
@@ -2887,10 +2950,17 @@ function psAddExtraPhoto(){
         var fallbackUrl = await clCompressImage(file, 1600, 0.92);
         var imgbbKey = localStorage.getItem('savvy_imgbb_key') || DEFAULT_IMGBB_KEY;
         var uploadedFb = fallbackUrl;
+        var remoteExtraValid = false;
         if (imgbbKey) {
-          try { var up = await clUploadPhotoToImgBB(fallbackUrl, imgbbKey, 'extra-fallback'); if(up) uploadedFb = up; } catch(e2){}
+          try {
+            var up = await clUploadPhotoToImgBB(fallbackUrl, imgbbKey, 'extra-fallback');
+            if(up) {
+              remoteExtraValid = await psValidateImageUrl(up, 5000);
+              if (remoteExtraValid) uploadedFb = up;
+            }
+          } catch(e2){}
         }
-        cur._extraImgs[idx] = { img: uploadedFb, local: fallbackUrl, loading: false };
+        cur._extraImgs[idx] = { img: uploadedFb, local: fallbackUrl, remote: remoteExtraValid ? uploadedFb : null, loading: false };
         renderExtraPhotosUI();
       } catch(err2) {
         cur._extraImgs.splice(idx, 1); // solo quitar si todo falló
