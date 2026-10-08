@@ -89,7 +89,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-08-converged-staging-preview-v7';
+window.PS_BUILD = '2026-10-08-converged-staging-preview-v11';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -2287,7 +2287,316 @@ function updateDateDisplay() {
   }
 }
 
+// ── PHASE 3: Shared Category Resolver ─────────────────────────────
+// Used by both condition loading and CSV export to ensure consistency
+function psResolveFinalCategory(item) {
+  if (!item) return '31786';
+  var key = String(item.category || '').trim() + '|' + String(item.title || '').trim();
+  var keyTrim = key.substring(0, 120);
+  return (
+    leafMap[key] ||
+    leafMap[keyTrim] ||
+    psSafeCategory(item.category, '31786')
+  );
+}
+window.psResolveFinalCategory = psResolveFinalCategory;
 
+// ── PHASE 3: eBay CONDITION WHEEL PICKER ──────────────────────────
+// Load conditions from backend /api/category-conditions endpoint
+async function psLoadCategoryConditions(finalCategoryId) {
+  if (!cur || !finalCategoryId) return;
+
+  // [SAFETY] Capture object identity to prevent mutations after product swap
+  var startCur = cur;
+
+  // Store requested category for retry
+  cur._conditionRequestedCategoryId = String(finalCategoryId).trim();
+
+  // Mark as loading (state machine)
+  cur._conditionState = 'loading';
+  cur._conditionError = '';
+  cur._availableConditions = [];
+  psRefreshConditionDisplay(); // Show loading state immediately
+
+  try {
+    const token = savvyToken();
+    if (!token) {
+      cur._conditionState = 'error';
+      cur._conditionError = 'No session token available';
+      console.error('[COND] ' + cur._conditionError);
+      psRefreshConditionDisplay();
+      return;
+    }
+
+    const SAVVY_API = (window.SAVVY_API || 'https://savvy-ebay-prices-product-scanner-staging.up.railway.app');
+    const url = SAVVY_API + '/api/category-conditions?category_id=' + encodeURIComponent(finalCategoryId);
+
+    console.log('[COND] Loading conditions for category: ' + finalCategoryId);
+
+    const response = await savvyLocationFetch(url, {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      cur._conditionState = 'error';
+      cur._conditionError = errorData.error || ('HTTP ' + response.status);
+      console.error('[COND] HTTP Error: ' + cur._conditionError);
+      psRefreshConditionDisplay();
+      return;
+    }
+
+    const data = await response.json();
+
+    // [SAFETY] Check if product was changed while fetch was in flight
+    if (cur !== startCur) {
+      console.warn('[COND] Product changed during fetch, ignoring response for category ' + finalCategoryId);
+      return;
+    }
+
+    // [SAFETY] Check if this response is still relevant (user may have changed category)
+    if (
+      !cur ||
+      String(cur._conditionRequestedCategoryId) !== String(finalCategoryId)
+    ) {
+      console.warn('[COND] Stale response ignored for category ' + finalCategoryId);
+      return;
+    }
+
+    if (data.status === 'error') {
+      cur._conditionState = 'error';
+      cur._conditionError = data.error || 'API error';
+      console.error('[COND] API Error: ' + cur._conditionError);
+      psRefreshConditionDisplay();
+      return;
+    }
+
+    // Verify categoryId matches requested category (cache safety)
+    if (String(data.categoryId).trim() !== String(finalCategoryId).trim()) {
+      cur._conditionState = 'error';
+      cur._conditionError = 'Category mismatch: requested ' + finalCategoryId + ', got ' + data.categoryId;
+      console.error('[COND] ' + cur._conditionError);
+      psRefreshConditionDisplay();
+      return;
+    }
+
+    // [SAFETY] Final identity check before storing data
+    if (cur !== startCur) {
+      console.warn('[COND] Product changed before storing condition data, discarding response');
+      return;
+    }
+
+    // Store conditions data
+    cur._conditionRequired = data.conditionRequired || false;
+    cur._availableConditions = data.conditions || [];
+    cur._conditionCategoryId = data.categoryId;
+
+    console.log('[COND] Loaded ' + cur._availableConditions.length + ' conditions');
+
+    // Auto-select if only one option
+    if (cur._availableConditions.length === 1) {
+      cur._conditionId = cur._availableConditions[0].conditionId;
+      cur._conditionDisplayName = cur._availableConditions[0].conditionDisplayName;
+      console.log('[COND] Auto-selected: ' + cur._conditionDisplayName);
+    } else {
+      // If condition previously selected but no longer valid, clear it
+      if (cur._conditionId) {
+        const stillValid = cur._availableConditions.find(c => c.conditionId === cur._conditionId);
+        if (!stillValid) {
+          console.log('[COND] Previous selection no longer valid in new category, clearing');
+          cur._conditionId = null;
+          cur._conditionDisplayName = '';
+        }
+      }
+    }
+
+    // Set final state based on whether condition is required
+    cur._conditionState = cur._conditionRequired ? 'ready' : 'not_required';
+    cur._conditionError = '';
+    psRefreshConditionDisplay(); // Update UI after load
+  } catch (err) {
+    console.error('[COND] Fetch error:', err);
+    cur._conditionState = 'error';
+    cur._conditionError = err.message || 'Network error';
+    psRefreshConditionDisplay(); // Update UI with error state
+  }
+}
+window.psLoadCategoryConditions = psLoadCategoryConditions;
+
+// Open condition wheel picker for CURRENT PRODUCT (before adding to bulk)
+function psOpenConditionWheelForCurrent() {
+  if (!cur || !cur._availableConditions || cur._availableConditions.length === 0) {
+    toast('❌ No conditions available for this category');
+    return;
+  }
+
+  const conditions = cur._availableConditions;
+  let tempSelectedId = cur._conditionId; // Temporary selection during scroll
+  let tempSelectedIndex = -1;
+
+  // Create wheel picker overlay
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9998;display:flex;flex-direction:column;justify-content:flex-end';
+
+  const sheet = document.createElement('div');
+  sheet.style.cssText = 'background:var(--bg);border-radius:16px 16px 0 0;overflow:hidden;max-height:80vh;display:flex;flex-direction:column';
+
+  // Header
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:16px;border-bottom:1px solid var(--bd);background:var(--sf)';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = 'background:none;border:none;color:var(--sv);font-size:14px;cursor:pointer;padding:4px';
+  cancelBtn.onclick = () => overlay.remove();
+
+  const titleDiv = document.createElement('div');
+  titleDiv.style.cssText = 'font-weight:800;color:var(--sv);font-size:16px';
+  titleDiv.textContent = 'Condition';
+
+  const doneBtn = document.createElement('button');
+  doneBtn.textContent = 'Done';
+  doneBtn.style.cssText = 'background:none;border:none;color:var(--ac);font-size:14px;cursor:pointer;font-weight:800;padding:4px';
+
+  header.appendChild(cancelBtn);
+  header.appendChild(titleDiv);
+  header.appendChild(doneBtn);
+
+  // Wheel container
+  const wheelContainer = document.createElement('div');
+  wheelContainer.style.cssText = 'flex:1;overflow-y:scroll;scroll-snap-type:y mandatory;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;position:relative';
+
+  // Add spacer top
+  const spacerTop = document.createElement('div');
+  spacerTop.style.height = 'calc(var(--ch, 44px) * 2)';
+  wheelContainer.appendChild(spacerTop);
+
+  // Add condition options
+  const options = [];
+  conditions.forEach((cond, idx) => {
+    const option = document.createElement('div');
+    option.style.cssText = 'flex:0 0 var(--ch, 44px);display:flex;align-items:center;justify-content:center;'
+      +'scroll-snap-align:center;cursor:pointer;font-size:16px;color:var(--sv);border:1px solid transparent;opacity:0.6;transition:opacity .2s,border-color .2s';
+    option.textContent = cond.conditionDisplayName;
+    option.setAttribute('data-cond-id', cond.conditionId);
+    option.setAttribute('data-idx', idx);
+
+    // Highlight if already selected
+    if (cur._conditionId === cond.conditionId) {
+      option.style.opacity = '1';
+      option.style.fontWeight = '800';
+      option.style.borderColor = 'var(--ac)';
+      tempSelectedIndex = idx;
+    }
+
+    options.push(option);
+    wheelContainer.appendChild(option);
+  });
+
+  // Add spacer bottom
+  const spacerBottom = document.createElement('div');
+  spacerBottom.style.height = 'calc(var(--ch, 44px) * 2)';
+  wheelContainer.appendChild(spacerBottom);
+
+  // Center highlight band
+  const centerBand = document.createElement('div');
+  centerBand.style.cssText = 'position:absolute;top:50%;left:0;right:0;height:var(--ch, 44px);'
+    +'border-top:1px solid var(--ac);border-bottom:1px solid var(--ac);pointer-events:none;'
+    +'opacity:0.3;z-index:1;transform:translateY(-50%)';
+  wheelContainer.appendChild(centerBand);
+
+  // Track scroll to determine centered option
+  const updateCenteredOption = () => {
+    const containerRect = wheelContainer.getBoundingClientRect();
+    const containerCenter = containerRect.height / 2;
+
+    options.forEach((opt, idx) => {
+      const optRect = opt.getBoundingClientRect();
+      const optCenter = optRect.top + optRect.height / 2 - containerRect.top;
+      const distance = Math.abs(optCenter - containerCenter);
+
+      if (distance < 30) {
+        // This option is centered
+        tempSelectedIndex = idx;
+        tempSelectedId = conditions[idx].conditionId;
+        opt.style.opacity = '1';
+        opt.style.fontWeight = '800';
+        opt.style.borderColor = 'var(--ac)';
+      } else {
+        opt.style.opacity = '0.6';
+        opt.style.fontWeight = '400';
+        opt.style.borderColor = 'transparent';
+      }
+    });
+  };
+
+  wheelContainer.addEventListener('scroll', updateCenteredOption, false);
+
+  // Done button handler
+  doneBtn.onclick = () => {
+    if (tempSelectedIndex >= 0 && tempSelectedIndex < conditions.length) {
+      const selected = conditions[tempSelectedIndex];
+      cur._conditionId = selected.conditionId;
+      cur._conditionDisplayName = selected.conditionDisplayName;
+      console.log('[COND] Selected: ' + cur._conditionDisplayName + ' (' + cur._conditionId + ')');
+    }
+    overlay.remove();
+    psRefreshConditionDisplay(); // Refresh the condition row
+  };
+
+  sheet.appendChild(header);
+  sheet.appendChild(wheelContainer);
+  overlay.appendChild(sheet);
+  overlay.setAttribute('data-picker', '');
+
+  document.body.appendChild(overlay);
+
+  // Auto-scroll to current selection if exists
+  if (tempSelectedIndex >= 0) {
+    setTimeout(() => {
+      options[tempSelectedIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      updateCenteredOption();
+    }, 100);
+  }
+}
+window.psOpenConditionWheelForCurrent = psOpenConditionWheelForCurrent;
+
+// Refresh condition display row
+function psRefreshConditionDisplay() {
+  const condRow = document.getElementById('condition-row');
+  if (!condRow) return;
+
+  // [COND] State machine: idle | loading | ready | error | not_required
+  const state = cur._conditionState || 'idle';
+
+  if (state === 'loading') {
+    condRow.innerHTML = '<div class="lbl">Condition</div><div class="val" style="color:var(--mu)">Loading conditions...</div>';
+  } else if (state === 'error') {
+    condRow.innerHTML = '<div class="lbl">Condition</div><div class="val" style="color:var(--dw)">⚠ Unable to load conditions</div>'
+      + '<div style="font-size:12px;color:var(--mu);margin-top:4px;cursor:pointer" onclick="psRetryConditionLoad()">↻ Retry</div>';
+  } else if (state === 'not_required') {
+    condRow.innerHTML = '<div class="lbl">Condition</div><div class="val" style="color:var(--mu)">Not required for this category</div>';
+  } else if (state === 'ready' && cur._conditionRequired && !cur._conditionId) {
+    condRow.innerHTML = '<div class="lbl">Condition</div><div class="val" style="color:var(--dw);cursor:pointer" onclick="psOpenConditionWheelForCurrent()">'
+      + '⚠ Select condition (REQUIRED) ›</div>';
+  } else if (state === 'ready' && cur._conditionId) {
+    condRow.innerHTML = '<div class="lbl">Condition</div><div class="val" style="cursor:pointer" onclick="psOpenConditionWheelForCurrent()">'
+      + (cur._conditionDisplayName || 'Selected') + ' ›</div>';
+  } else if (state === 'idle' || !state) {
+    condRow.innerHTML = '<div class="lbl">Condition</div><div class="val" style="color:var(--mu)">—</div>';
+  } else {
+    condRow.innerHTML = '<div class="lbl">Condition</div><div class="val" style="color:var(--mu);cursor:pointer" onclick="psOpenConditionWheelForCurrent()">'
+      + 'Select condition ›</div>';
+  }
+}
+window.psRefreshConditionDisplay = psRefreshConditionDisplay;
+
+function psRetryConditionLoad() {
+  if (cur && cur._conditionRequestedCategoryId) {
+    psLoadCategoryConditions(cur._conditionRequestedCategoryId);
+  }
+}
+window.psRetryConditionLoad = psRetryConditionLoad;
 
 // ── RECONSTRUIR TÍTULO CON TODOS LOS CAMPOS ──────────────────
 function rebuildAndApplyTitle(n) {
@@ -3308,6 +3617,12 @@ async function finishAnalyze(upc, prod, ebayFull, stepIn){
     _lastBundleUrl = '';
     try {
       renderResult(res);
+      // PHASE 3: Load conditions for final category (using same resolver as CSV export)
+      if (cur) {
+        var finalCatId = psResolveFinalCategory(cur);
+        cur._finalCategoryId = String(finalCatId);
+        psLoadCategoryConditions(finalCatId);
+      }
       screen('res');
     } catch(renderErr) {
       console.error('renderResult error:', renderErr);
@@ -3433,6 +3748,82 @@ async function addBulk() {
       }
       return;
     }
+  }
+
+  // PHASE 3: Validar condición - category consistency FIRST
+  const currentFinalCategory = psResolveFinalCategory(cur);
+
+  // [SAFETY] Detect category change - MUST BLOCK ADD immediately
+  // Do not snapshot condState before checking category
+  if (
+    !cur._finalCategoryId ||
+    String(cur._finalCategoryId) !== String(currentFinalCategory) ||
+    String(cur._conditionRequestedCategoryId || '') !== String(currentFinalCategory)
+  ) {
+    console.log('[COND] Category requires condition reload: ' + (cur._finalCategoryId || 'none') + ' -> ' + currentFinalCategory);
+    cur._finalCategoryId = String(currentFinalCategory);
+    psLoadCategoryConditions(currentFinalCategory);
+    toast('⏳ Cargando condiciones para la categoría correcta...');
+    var addBtn = document.getElementById('addBtn');
+    if (addBtn) {
+      addBtn.disabled = false;
+      addBtn.textContent = '➕ ADD TO CSV';
+      addBtn.style.background = '';
+    }
+    return;  // BLOCK - must wait for reload
+  }
+
+  // [SAFETY] NOW safe to read current condition state (after category validated)
+  const condState = cur._conditionState || 'idle';
+
+  // [COND] Block if in idle state (conditions never loaded or cleared)
+  if (condState === 'idle') {
+    toast('❌ CONDICIÓN - Las opciones no están cargadas. Intenta nuevamente.');
+    var addBtn = document.getElementById('addBtn');
+    if (addBtn) {
+      addBtn.disabled = false;
+      addBtn.textContent = '➕ ADD TO CSV';
+      addBtn.style.background = '';
+    }
+    return;
+  }
+
+  // [COND] Block if conditions are still loading
+  if (condState === 'loading') {
+    toast('❌ CONDICIÓN - Las opciones aún se están cargando...');
+    var addBtn = document.getElementById('addBtn');
+    if (addBtn) {
+      addBtn.disabled = false;
+      addBtn.textContent = '➕ ADD TO CSV';
+      addBtn.style.background = '';
+    }
+    return;
+  }
+
+  // [COND] Block if conditions failed to load AND user must retry
+  if (condState === 'error') {
+    toast('❌ CONDICIÓN - No se cargaron las opciones. Toca ↻ Retry antes de continuar.');
+    var addBtn = document.getElementById('addBtn');
+    if (addBtn) {
+      addBtn.disabled = false;
+      addBtn.textContent = '➕ ADD TO CSV';
+      addBtn.style.background = '';
+    }
+    return;
+  }
+
+  // [COND] Block if condition REQUIRED but not selected (state must be 'ready')
+  if (condState === 'ready' && cur._conditionRequired && !cur._conditionId) {
+    toast('❌ FALTA CONDITION - Campo obligatorio para esta categoría');
+    var addBtn = document.getElementById('addBtn');
+    if (addBtn) {
+      addBtn.disabled = false;
+      addBtn.textContent = '➕ ADD TO CSV';
+      addBtn.style.background = '';
+    }
+    // Auto-open condition wheel for current product
+    setTimeout(() => psOpenConditionWheelForCurrent(), 300);
+    return;
   }
 
   toast('🟢 Agregando al CSV...');
@@ -3796,7 +4187,13 @@ async function _doAddBulk(usedTitle, usedSKU, usedPrice, shade, expDate, locatio
     photo:       photoUrl,
     bundleImg:   photoUrl,
     _specifics:  (cur && cur._specifics) || {},
-    scannedBy:   SAVVY_CURRENT_USER || 'unknown'
+    scannedBy:   SAVVY_CURRENT_USER || 'unknown',
+    // PHASE 3: eBay Condition System (inherit from cur)
+    conditionId:        (cur && cur._conditionId) || null,
+    conditionDisplayName: (cur && cur._conditionDisplayName) || '',
+    conditionRequired:   (cur && cur._conditionRequired) || false,
+    conditionCategoryId: (cur && cur._conditionCategoryId) || '',
+    conditionState:      (cur && cur._conditionState) || 'idle'
   });
   saveBulkToStorage();
   updateFAB();
@@ -4292,7 +4689,13 @@ async function addSplitPacksToCSV(){
       weightMajor: _wMajor,
       weightMinor: _wMinor,
       truck:       window._truckNumber || '',
-      scannedBy:   SAVVY_CURRENT_USER || 'unknown'
+      scannedBy:   SAVVY_CURRENT_USER || 'unknown',
+      // PHASE 3: eBay Condition System (inherit from cur)
+      conditionId:        (cur && cur._conditionId) || null,
+      conditionDisplayName: (cur && cur._conditionDisplayName) || '',
+      conditionRequired:   (cur && cur._conditionRequired) || false,
+      conditionCategoryId: (cur && cur._conditionCategoryId) || '',
+      conditionState:      (cur && cur._conditionState) || 'idle'
     });
     added++;
   }
@@ -7439,19 +7842,56 @@ async function exportCSV(){
     return;
   }
 
+  // PHASE 3: Second-layer condition validation - check each item's condition state before export
+  var _badConditions = bulk.filter(function(it) {
+    var itemState = it.conditionState || 'idle';
+    // Block items in loading/error/idle states (conditions not ready)
+    if (itemState === 'loading' || itemState === 'error' || itemState === 'idle') return true;
+    // Block items where condition is REQUIRED but not selected
+    if (itemState === 'ready' && it.conditionRequired && !it.conditionId) return true;
+    return false;
+  });
+
+  if (_badConditions.length) {
+    var _condIssueList = _badConditions.map(function(it) {
+      var state = it.conditionState || 'idle';
+      if (state === 'loading') return '• ' + (it.sku || it.title || '?') + ' — conditions loading';
+      if (state === 'error') return '• ' + (it.sku || it.title || '?') + ' — conditions failed to load';
+      if (state === 'idle') return '• ' + (it.sku || it.title || '?') + ' — no condition loaded';
+      if (state === 'ready' && it.conditionRequired && !it.conditionId) return '• ' + (it.sku || it.title || '?') + ' — condition required but not selected';
+      return '• ' + (it.sku || it.title || '?');
+    }).join('\n');
+
+    window._exportLock = false;
+    if (expBtnEl) {
+      expBtnEl.innerHTML = expBtnOldHTML;
+      expBtnEl.style.opacity = '';
+      expBtnEl.style.pointerEvents = '';
+    }
+    alert(
+      '🚫 EXPORT DETENIDO\n\n' + _badConditions.length + ' producto(s) con problemas de CONDITION:\n\n' +
+      _condIssueList +
+      '\n\nEdita cada uno en la lista de arriba, confirma que la condición está cargada y seleccionada. Luego intenta exportar otra vez.'
+    );
+    toast('🚫 Export detenido — ' + _badConditions.length + ' producto(s) sin condición válida');
+    return;
+  }
+
   bulk.forEach(function(it) {
     // ── CATEGORÍA FINAL, CALCULADA AL PRINCIPIO DEL CICLO ──────────────────
-    // Antes esto se calculaba hasta abajo (justo antes de armar la fila), pero
-    // toda la lógica de item specifics de arriba usaba it.category — que es la
-    // categoría ADIVINADA localmente, no la que eBay asigna y que realmente
-    // viaja en el CSV. Por eso el Dosage no se llenaba: TUM-307667388107 salió
-    // en 75039 y NAT-074312014024 en 11776, pero la lógica estaba comparando
-    // contra otra categoría. Se calcula UNA vez aquí y se reutiliza en todo
-    // el ciclo. (Corregido 14 ago 2026 — misma clase de bug que la fecha de
-    // expiración.)
-    var _catKey     = String(it.category || '').trim() + '|' + String(it.title || '').trim();
-    var _catKeyTrim = _catKey.substring(0, 120); // el backend recorta la clave a 120 chars
-    var _finalCat   = leafMap[_catKey] || leafMap[_catKeyTrim] || psSafeCategory(it.category, '31786');
+    // Usa el mismo resolver que la carga de condiciones para garantizar coherencia
+    var _finalCat = psResolveFinalCategory(it);
+
+    // [SAFETY] PHASE 3: Verificar coherencia de categoría de condición
+    if (it.conditionState && it.conditionState !== 'idle' && it.conditionCategoryId) {
+      if (String(it.conditionCategoryId) !== String(_finalCat)) {
+        console.warn('[CSV] Condición fue cargada para categoría ' + it.conditionCategoryId + ' pero se exportará en ' + _finalCat);
+        console.warn('[CSV] SKU: ' + (it.sku || it.title));
+        skipped++;
+        toast('⚠️ ' + (it.sku || it.title || '?') + ' — categoría de condición no coincide, omitido');
+        return;
+      }
+    }
 
     // Saltar productos no identificados o restringidos por EPA
     if (EPA_BLOCKED.some(function(u){ return (it.sku||'').includes(u); })) {
@@ -7692,7 +8132,7 @@ async function exportCSV(){
       it.sku||'',
       _finalCat,
       cleanTitle,
-      '1000',
+      it.conditionId ? String(it.conditionId) : '',
       psAppendLote(descToEbayHTML(it.description) || ('<p>' + cleanTitle + '</p>'), it),
       psNormalizeImageUrls(pics),
       'FixedPrice','GTC',
