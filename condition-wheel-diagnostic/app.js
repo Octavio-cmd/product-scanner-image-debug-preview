@@ -97,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-09-condition-content-final-v31';
+window.PS_BUILD = '2026-10-09-condition-category-stability-v32';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -2305,10 +2305,23 @@ window._psLeafCategoryMap = window._psLeafCategoryMap || {};
 function psResolveFinalCategory(item) {
   if (!item) return '31786';
 
+  // [v32] Priority 1: If category was already resolved and validated, that is AUTHORITATIVE
+  // Title changes (condition, manual edits) must NEVER invalidate the resolved final category
+  if (item._finalCategoryId) {
+    return String(item._finalCategoryId);
+  }
+
+  // [v32] Priority 2: Use the validated condition category from the last successful load
+  if (item._conditionCategoryId) {
+    return String(item._conditionCategoryId);
+  }
+
+  // [v32] Priority 3: Check cache for previously resolved mappings
   var map = window._psLeafCategoryMap || {};
   var key = String(item.category || '').trim() + '|' + String(item.title || '').trim();
   var keyTrim = key.substring(0, 120);
 
+  // [v32] Priority 4: Fallback to provisional category only if nothing else available
   return (
     map[key] ||
     map[keyTrim] ||
