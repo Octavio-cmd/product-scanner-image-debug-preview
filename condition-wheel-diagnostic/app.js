@@ -97,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-09-condition-description-sync-v25';
+window.PS_BUILD = '2026-10-09-condition-description-sync-v26';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -2638,7 +2638,9 @@ function psRebuildDescriptionForCondition(baseDescription, conditionId) {
     package_contents: baseDescription.package_contents
       ? psNormalizeDescriptionForCondition(baseDescription.package_contents, conditionId)
       : '',
-    disclaimer: baseDescription.disclaimer || ''
+    disclaimer: baseDescription.disclaimer
+      ? psNormalizeDescriptionForCondition(baseDescription.disclaimer, conditionId)
+      : ''
   };
 
   // Prepend CONDITION section based on condition
