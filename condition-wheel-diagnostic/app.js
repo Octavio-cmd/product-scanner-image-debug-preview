@@ -97,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-09-condition-csv-sync-v33';
+window.PS_BUILD = '2026-10-09-condition-multipack-title-v34';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -5154,6 +5154,11 @@ async function addSplitPacksToCSV(){
     if (dup) { skippedDup++; continue; }
 
     var title = rebuildTitle(baseTitle, p, shade, expDate);
+    // V34: Apply condition normalization to all pack titles (1pk, 3pk, 6pk, 12pk)
+    if (cur && cur._conditionId) {
+      title = psSanitizeTitleForCondition(title);  // Remove contradictory condition terms
+      title = psAddConditionLabelToTitle(title, cur._conditionId);  // Append selected condition
+    }
     var price = calcBundlePrice(cur.ebay || {}, p);
 
     // Armar las fotos del listado:
