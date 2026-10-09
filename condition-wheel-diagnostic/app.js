@@ -97,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-09-condition-content-v29-diagnostic';
+window.PS_BUILD = '2026-10-09-condition-content-v30';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -2480,7 +2480,6 @@ async function psLoadCategoryConditions(finalCategoryId) {
           cur._conditionId = newCondition.conditionId;
           cur._conditionDisplayName = newCondition.conditionDisplayName;
           console.log('[COND] Auto-selected NEW: ' + cur._conditionDisplayName);
-          console.log('[DESC-FLOW] auto-select calls psApplyConditionContent(1000)', { hasDescription: !!cur._description });
           // [SYNC v27] Apply full condition content sync for auto-selected New
           psApplyConditionContent(cur._conditionId);
         } else {
@@ -2609,26 +2608,84 @@ function psAddConditionLabelToTitle(title, conditionId) {
 }
 window.psAddConditionLabelToTitle = psAddConditionLabelToTitle;
 
-// [SYNC v27] Remove contradictory condition language using clause-aware normalization
+// [SYNC v30] Remove contradictory condition language symmetrically for all conditions
 function psNormalizeDescriptionForCondition(text, conditionId) {
   if (!text || typeof text !== 'string') return text;
-  if (conditionId === 1000) return text; // New condition - keep as-is
 
-  // For non-New conditions, remove SENTENCES containing contradictory New-condition claims
-  // Pattern: sentence containing brand new, factory-sealed, unopened, unused, original packaging, etc.
-  const newConditionPatterns = [
-    /[^.!?]*\bbrand[\s-]*new\b[^.!?]*[.!?]/gi,
-    /[^.!?]*\bfactory[\s-]*sealed\b[^.!?]*[.!?]/gi,
-    /[^.!?]*\bnew\s+in\s+(?:box|packaging)\b[^.!?]*[.!?]/gi,
-    /[^.!?]*\bnew\s+item\b[^.!?]*[.!?]/gi,
-    /[^.!?]*\b(?:never\s+)?unopened\b[^.!?]*[.!?]/gi,
-    /[^.!?]*\bunused\b[^.!?]*[.!?]/gi,
-    /[^.!?]*\boriginal\s+(?:packaging|box|manufacturer\s+packaging)\b[^.!?]*[.!?]/gi,
-    /[^.!?]*\bmanufacturer[\s-]*(?:sealed|packaging)\b[^.!?]*[.!?]/gi
-  ];
+  let patterns = [];
+
+  if (conditionId === 1000) {
+    // NEW: Remove Open Box, Used, Pre-Owned, Refurbished, For Parts, Not Working references
+    patterns = [
+      /[^.!?]*\b(?:open[\s-]?box|open-box)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bused\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:pre[\s-]?owned|preowned)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bseller\s+refurbished\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\brefurbished\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:for\s+parts|parts\s+only|not\s+working)\b[^.!?]*[.!?]/gi
+    ];
+  } else if (conditionId === 1500) {
+    // OPEN BOX: Remove Brand New, Used, Refurbished, For Parts, Not Working
+    patterns = [
+      /[^.!?]*\bbrand[\s-]*new\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bfactory[\s-]*sealed\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bnew\s+in\s+(?:box|packaging)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bnew\s+item\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:never\s+)?unopened\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bunused\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bused\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:pre[\s-]?owned|preowned)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bseller\s+refurbished\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\brefurbished\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:for\s+parts|parts\s+only|not\s+working)\b[^.!?]*[.!?]/gi
+    ];
+  } else if (conditionId === 2500) {
+    // SELLER REFURBISHED: Remove Brand New, Open Box, Used, For Parts, Not Working
+    patterns = [
+      /[^.!?]*\bbrand[\s-]*new\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bfactory[\s-]*sealed\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bnew\s+in\s+(?:box|packaging)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bnew\s+item\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:never\s+)?unopened\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bunused\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:open[\s-]?box|open-box)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bused\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:pre[\s-]?owned|preowned)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:for\s+parts|parts\s+only|not\s+working)\b[^.!?]*[.!?]/gi
+    ];
+  } else if (conditionId === 3000) {
+    // USED: Remove Brand New, Open Box, Refurbished, For Parts, Not Working
+    patterns = [
+      /[^.!?]*\bbrand[\s-]*new\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bfactory[\s-]*sealed\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bnew\s+in\s+(?:box|packaging)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bnew\s+item\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:never\s+)?unopened\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bunused\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:open[\s-]?box|open-box)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bseller\s+refurbished\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\brefurbished\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:for\s+parts|parts\s+only|not\s+working)\b[^.!?]*[.!?]/gi
+    ];
+  } else if (conditionId === 7000) {
+    // FOR PARTS OR NOT WORKING: Remove Brand New, Open Box, Used, Refurbished
+    patterns = [
+      /[^.!?]*\bbrand[\s-]*new\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bfactory[\s-]*sealed\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bnew\s+in\s+(?:box|packaging)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bnew\s+item\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:never\s+)?unopened\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bunused\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:open[\s-]?box|open-box)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bused\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\b(?:pre[\s-]?owned|preowned)\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\bseller\s+refurbished\b[^.!?]*[.!?]/gi,
+      /[^.!?]*\brefurbished\b[^.!?]*[.!?]/gi
+    ];
+  }
 
   let normalized = text;
-  newConditionPatterns.forEach(pattern => {
+  patterns.forEach(pattern => {
     normalized = normalized.replace(pattern, ' ');
   });
 
@@ -2677,14 +2734,12 @@ window.psRebuildDescriptionForCondition = psRebuildDescriptionForCondition;
 // [SYNC v27] Single reusable function to apply condition content to current product
 function psApplyConditionContent(conditionId) {
   if (!cur) return;
-  console.log('[DESC-FLOW] psApplyConditionContent START', { conditionId, hasDescription: !!cur._description, hasBaseDescription: !!cur._conditionBaseDescription });
 
   // Update condition state
   const matchingCondition = cur._availableConditions && cur._availableConditions.find(c => c.conditionId === conditionId);
   if (matchingCondition) {
     cur._conditionId = conditionId;
     cur._conditionDisplayName = matchingCondition.conditionDisplayName;
-    console.log('[DESC-FLOW] condition applied: ' + cur._conditionDisplayName + ' (' + conditionId + ')');
   }
 
   // Get the current effective title
@@ -2725,25 +2780,16 @@ function psApplyConditionContent(conditionId) {
   if (cur._description) {
     // Use clean base for rebuild to avoid carryover
     const baseDesc = cur._conditionBaseDescription || cur._description;
-    console.log('[DESC-FLOW] rebuild description from base', { baseIntro: baseDesc.intro.substring(0, 50) });
     const rebuiltDesc = psRebuildDescriptionForCondition(baseDesc, conditionId);
-    console.log('[DESC-FLOW] rebuilt description object', { intro: rebuiltDesc.intro.substring(0, 80) });
     cur._description = rebuiltDesc;
-    console.log('[DESC-FLOW] cur._description updated', { intro: cur._description.intro.substring(0, 80) });
 
     // Update visible description DOM immediately
     const descResult = document.getElementById('ps-desc-result');
     if (descResult) {
       const renderedHtml = renderDescriptionHTML(rebuiltDesc);
-      console.log('[DESC-FLOW] rendered HTML length:', renderedHtml.length, 'contains CONDITION:', renderedHtml.includes('CONDITION:'));
       descResult.innerHTML = renderedHtml;
-      console.log('[DESC-FLOW] DOM updated with condition content');
     }
-  } else {
-    console.log('[DESC-FLOW] WARNING: no cur._description to rebuild!');
   }
-
-  console.log('[DESC-FLOW] psApplyConditionContent END');
 }
 window.psApplyConditionContent = psApplyConditionContent;
 
@@ -3975,15 +4021,12 @@ async function finishAnalyze(upc, prod, ebayFull, stepIn){
     applyVerdict(res);
 
     cur=res;
-    console.log('[DESC-FLOW] product loaded, before renderResult', { hasDescription: !!cur._description });
     cur._singleProductImg=null; // limpiar foto anterior al escanear nuevo producto
     cur._bundleImg=null;
     cur._titleManual=false; // el producto nuevo NO hereda edición manual del anterior
     _lastBundleUrl = '';
     try {
-      console.log('[DESC-FLOW] calling renderResult');
       renderResult(res);
-      console.log('[DESC-FLOW] renderResult completed');
       // PHASE 3: Resolve real eBay leaf category BEFORE loading conditions
       // This ensures condition metadata is fetched for the correct validated category
       if (cur) {
@@ -5735,20 +5778,15 @@ Rules:
       package_contents: _fixPluralEcho(parsed.package_contents || ''),
       disclaimer: PS_DESC_DISCLAIMER
     };
-    console.log('[DESC-FLOW] description created from Claude', { hasIntro: !!cur._description.intro, conditionId: cur._conditionId });
 
     // [SYNC v25] Capture condition-free base for later rebuilds
     cur._conditionBaseDescription = JSON.parse(JSON.stringify(cur._description));
-    console.log('[DESC-FLOW] clean base captured', { intro: cur._conditionBaseDescription.intro.substring(0, 50) });
 
     // [SYNC v28] If condition was already auto-selected, reapply to the now-available description
     if (cur._conditionId) {
-      console.log('[DESC-FLOW] apply condition', cur._conditionId, 'before apply:', { intro: cur._description.intro.substring(0, 50) });
       psApplyConditionContent(cur._conditionId);
-      console.log('[DESC-FLOW] description after condition apply', { intro: cur._description.intro.substring(0, 50) });
     }
 
-    console.log('[DESC-FLOW] render description from psAutoGenerateDescription');
     if(out) out.innerHTML = renderDescriptionHTML(cur._description);
   }catch(err){
     console.error('psAutoGenerateDescription error:', err);
@@ -6875,7 +6913,6 @@ function renderDescriptionHTML(desc){
 
 function renderResult(r){
   if(!r)return;
-  console.log('[DESC-FLOW] renderResult called', { hasDescription: !!r._description, descIntro: r._description ? r._description.intro.substring(0, 50) : 'none' });
   const sv=r.verdict==='SAVVY';
   const ebay=r.ebay||{};
   const low =ebay.prices&&ebay.prices.low||0;
