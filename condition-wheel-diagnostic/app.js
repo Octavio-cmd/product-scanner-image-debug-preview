@@ -97,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-09-condition-title-sync-v22';
+window.PS_BUILD = '2026-10-09-condition-title-sync-v23';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -2681,13 +2681,52 @@ function psOpenConditionWheelForCurrent() {
       cur._conditionDisplayName = selected.conditionDisplayName;
       console.log('[COND] Selected: ' + cur._conditionDisplayName + ' (' + cur._conditionId + ')');
 
-      // [SYNC v22] Sanitize title to remove contradictory condition words
-      if (cur._selectedTitle) {
-        cur._selectedTitle = psSanitizeTitleForCondition(cur._selectedTitle, selected.conditionId);
-        console.log('[COND-TITLE] Sanitized title: ' + cur._selectedTitle);
-        // Update the title input if visible
+      // [SYNC v23] Synchronize all title sources for condition change
+      // Get the current effective title (prioritize visible/edited sources over stale ones)
+      const titleDisplay = document.getElementById('pack-title-display');
+      const currentEffectiveTitle = cur._selectedTitle ||
+                                   (titleDisplay && titleDisplay.dataset.val) ||
+                                   cur.title || '';
+
+      if (currentEffectiveTitle) {
+        // Sanitize the effective title for the new condition
+        const sanitizedTitle = psSanitizeTitleForCondition(currentEffectiveTitle, selected.conditionId);
+        console.log('[COND-TITLE v23] Sanitized "' + currentEffectiveTitle + '" → "' + sanitizedTitle + '"');
+
+        // ── Synchronize ALL title sources (single source of truth) ──
+        // 1. Update the source property used by visible display
+        cur.title = sanitizedTitle;
+        console.log('[COND-TITLE v23] cur.title = ' + sanitizedTitle);
+
+        // 2. Update intermediate state
+        cur._selectedTitle = sanitizedTitle;
+
+        // 3. Update visible DOM element (both display and data attribute)
+        if (titleDisplay) {
+          titleDisplay.textContent = sanitizedTitle;
+          titleDisplay.dataset.val = sanitizedTitle;
+          console.log('[COND-TITLE v23] pack-title-display updated');
+        }
+
+        // 4. Update edit textarea if present
         const titleInput = document.getElementById('pack-title-input');
-        if (titleInput) titleInput.value = cur._selectedTitle;
+        if (titleInput) {
+          titleInput.value = sanitizedTitle;
+          console.log('[COND-TITLE v23] pack-title-input updated');
+        }
+
+        // 5. Update character count
+        const charCount = document.getElementById('title-char-count');
+        if (charCount) {
+          charCount.textContent = (sanitizedTitle || '').length + '/80 chars';
+          console.log('[COND-TITLE v23] title-char-count updated: ' + (sanitizedTitle || '').length);
+        }
+
+        // 6. Prevent packState from overwriting with stale baseTitle
+        if (window._packState && window._packState.baseTitle) {
+          window._packState.baseTitle = sanitizedTitle;
+          console.log('[COND-TITLE v23] Updated _packState.baseTitle');
+        }
       }
     }
     overlay.remove();
