@@ -79,6 +79,14 @@
       tapTimer = setTimeout(function(){ tapCount = 0; }, 1500);
       if(tapCount >= 5){ tapCount = 0; window.toggleDebugConsole(); }
     });
+
+    // [DIAGNOSTIC v20] Visible debug button for iPhone testing
+    var debugBtn = document.createElement('button');
+    debugBtn.id = 'debug-condition-btn';
+    debugBtn.textContent = 'DEBUG CONDITION';
+    debugBtn.style.cssText = 'position:fixed;bottom:70px;right:12px;padding:10px 14px;background:#FF6B35;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:12px;z-index:999;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4);letter-spacing:.5px';
+    debugBtn.onclick = function(e){ e.stopPropagation(); window.toggleDebugConsole(); };
+    document.body.appendChild(debugBtn);
   });
 })();
 
@@ -89,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-08-condition-wheel-diagnostic-v19';
+window.PS_BUILD = '2026-10-08-condition-wheel-diagnostic-v20';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
