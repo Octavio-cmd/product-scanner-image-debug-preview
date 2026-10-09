@@ -97,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-09-condition-content-v30';
+window.PS_BUILD = '2026-10-09-condition-content-final-v31';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -2571,40 +2571,55 @@ function psAddConditionLabelToTitle(title, conditionId) {
   const label = conditionLabels[conditionId];
   if (!label) return title;
 
-  // Check if condition label already in title (case-insensitive)
-  const labelRegex = new RegExp('\\b' + label + '\\b', 'i');
-  if (labelRegex.test(title)) {
-    // Already has the label - remove duplicates to be safe
-    const cleanTitle = title.replace(new RegExp('\\b' + label + '\\b', 'gi'), label);
-    return cleanTitle.replace(/\s+/g, ' ').trim();
-  }
+  // Step 1: Remove ALL condition phrases from title (longest first to avoid partial matches)
+  let canonical = title;
+  const conditionPhrases = [
+    'Brand New',
+    'Seller Refurbished',
+    'Open-box',
+    'Open Box',
+    'Pre-Owned',
+    'Preowned',
+    'Parts Only',
+    'For Parts',
+    'Not Working',
+    'Refurbished',
+    'New',
+    'Used'
+  ];
 
-  // Try to append condition label if space allows
+  conditionPhrases.forEach(phrase => {
+    const regex = new RegExp('\\b' + phrase.replace(/[\s\-]/g, '[\\s\\-]*') + '\\b', 'gi');
+    canonical = canonical.replace(regex, '');
+  });
+
+  // Clean up extra spaces
+  canonical = canonical.replace(/\s+/g, ' ').trim();
+
+  // Step 2: Append selected condition label
   const targetLength = 80;
   const labelWithSpace = ' ' + label;
 
-  if (title.length + labelWithSpace.length <= targetLength) {
-    return title + labelWithSpace;
+  // Try to append if space allows
+  if (canonical.length + labelWithSpace.length <= targetLength) {
+    return canonical + labelWithSpace;
   }
 
-  // If no space, try to fit by removing trailing non-essential words
-  // Keep brand, model, product type, but trim trailing descriptors
-  let trimmed = title;
-  const wordList = title.split(' ');
-
-  // Trim from end until we have space for condition label
-  while (trimmed.length > targetLength - labelWithSpace.length && wordList.length > 2) {
+  // If no space, trim trailing words from canonical until we have room
+  const wordList = canonical.split(' ');
+  while (canonical.length + labelWithSpace.length > targetLength && wordList.length > 2) {
     wordList.pop();
-    trimmed = wordList.join(' ');
+    canonical = wordList.join(' ');
   }
 
-  // Final length check
-  if (trimmed.length + labelWithSpace.length <= targetLength) {
-    return (trimmed + labelWithSpace).substring(0, targetLength);
+  // Final append with length check
+  const result = canonical + labelWithSpace;
+  if (result.length <= targetLength) {
+    return result;
   }
 
-  // If still no space, return original
-  return title.substring(0, targetLength);
+  // Emergency fallback: return truncated
+  return result.substring(0, targetLength);
 }
 window.psAddConditionLabelToTitle = psAddConditionLabelToTitle;
 
