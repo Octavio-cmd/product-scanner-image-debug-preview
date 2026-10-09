@@ -97,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-08-condition-wheel-diagnostic-v20';
+window.PS_BUILD = '2026-10-09-condition-picker-ios-fix-v21';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -2499,6 +2499,7 @@ async function psLoadCategoryConditions(finalCategoryId) {
 window.psLoadCategoryConditions = psLoadCategoryConditions;
 
 // Open condition wheel picker for CURRENT PRODUCT (before adding to bulk)
+// [FIX v21] iOS-safe picker: robust tappable rows, no transforms, no clipping
 function psOpenConditionWheelForCurrent() {
   if (!cur || !cur._availableConditions || cur._availableConditions.length === 0) {
     toast('❌ No conditions available for this category');
@@ -2517,19 +2518,20 @@ function psOpenConditionWheelForCurrent() {
   });
 
   const conditions = cur._availableConditions;
-  let tempSelectedId = cur._conditionId; // Temporary selection during scroll
+  let tempSelectedId = cur._conditionId;
   let tempSelectedIndex = -1;
 
-  // Create wheel picker overlay
+  // Create overlay with modal backdrop
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9998;display:flex;flex-direction:column;justify-content:flex-end';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
   const sheet = document.createElement('div');
   sheet.style.cssText = 'background:var(--bg);border-radius:16px 16px 0 0;overflow:hidden;max-height:80vh;display:flex;flex-direction:column';
 
   // Header
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:16px;border-bottom:1px solid var(--bd);background:var(--sf)';
+  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:16px;border-bottom:1px solid var(--bd);background:var(--sf);flex-shrink:0';
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
   cancelBtn.style.cssText = 'background:none;border:none;color:var(--sv);font-size:14px;cursor:pointer;padding:4px';
@@ -2547,59 +2549,56 @@ function psOpenConditionWheelForCurrent() {
   header.appendChild(titleDiv);
   header.appendChild(doneBtn);
 
-  // Wheel container
-  const wheelContainer = document.createElement('div');
-  wheelContainer.style.cssText = 'flex:1;overflow-y:scroll;scroll-snap-type:y mandatory;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;position:relative';
+  // Options container — simple scrollable list, no transforms, full width
+  const optionsContainer = document.createElement('div');
+  optionsContainer.style.cssText = 'flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;width:100%;min-height:0';
 
-  // Add spacer top
-  const spacerTop = document.createElement('div');
-  spacerTop.style.height = 'calc(var(--ch, 44px) * 2)';
-  wheelContainer.appendChild(spacerTop);
-
-  // Add condition options
+  // Add condition options as simple tappable rows
   const options = [];
   conditions.forEach((cond, idx) => {
     const option = document.createElement('div');
-    option.style.cssText = 'flex:0 0 var(--ch, 44px);display:flex;align-items:center;justify-content:center;'
-      +'scroll-snap-align:center;cursor:pointer;font-size:16px;color:var(--sv);border:1px solid transparent;opacity:0.6;transition:opacity .2s,border-color .2s;font-weight:400';
+    option.style.cssText = 'flex:0 0 auto;min-height:48px;padding:12px 16px;display:flex;align-items:center;'
+      +'cursor:pointer;font-size:16px;color:var(--sv);border-bottom:1px solid var(--bd);'
+      +'transition:background-color .2s,color .2s;background:transparent';
     option.textContent = cond.conditionDisplayName;
     option.setAttribute('data-cond-id', cond.conditionId);
     option.setAttribute('data-idx', idx);
 
-    // [DIAGNOSTIC] Log each option being created
+    // [DIAGNOSTIC] Log each option being rendered
     console.log('[COND-WHEEL] rendering option', idx, 'id:', cond.conditionId, 'name:', cond.conditionDisplayName);
 
     // Highlight if already selected
     if (cur._conditionId === cond.conditionId) {
-      option.style.opacity = '1';
+      option.style.background = 'rgba(255,107,53,.15)';
       option.style.fontWeight = '800';
-      option.style.borderColor = 'var(--ac)';
+      option.style.color = 'var(--ac)';
       tempSelectedIndex = idx;
       tempSelectedId = cond.conditionId;
     }
 
-    // [FIX v15] Add click/tap handler to make options selectable
-    option.addEventListener('click', function() {
+    // Tap handler
+    option.addEventListener('click', function(e) {
+      e.stopPropagation();
       tempSelectedIndex = idx;
       tempSelectedId = cond.conditionId;
 
       // Update visual highlighting for all options
       options.forEach(function(o, i) {
-        var selected = i === idx;
-        o.style.opacity = selected ? '1' : '0.6';
-        o.style.fontWeight = selected ? '800' : '400';
-        o.style.borderColor = selected ? 'var(--ac)' : 'transparent';
+        var isSelected = i === idx;
+        o.style.background = isSelected ? 'rgba(255,107,53,.15)' : 'transparent';
+        o.style.fontWeight = isSelected ? '800' : '400';
+        o.style.color = isSelected ? 'var(--ac)' : 'var(--sv)';
       });
 
-      // Scroll selected option to center
+      // Scroll selected into view
       option.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center'
+        behavior: 'auto',
+        block: 'nearest'
       });
     });
 
     options.push(option);
-    wheelContainer.appendChild(option);
+    optionsContainer.appendChild(option);
   });
 
   // [DIAGNOSTIC] Log rendered option count
@@ -2609,50 +2608,10 @@ function psOpenConditionWheelForCurrent() {
   if (tempSelectedIndex < 0 && options.length > 0) {
     tempSelectedIndex = 0;
     tempSelectedId = conditions[0].conditionId;
-    setTimeout(() => {
-      options[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
-      updateCenteredOption();
-    }, 100);
+    options[0].style.background = 'rgba(255,107,53,.15)';
+    options[0].style.fontWeight = '800';
+    options[0].style.color = 'var(--ac)';
   }
-
-  // Add spacer bottom
-  const spacerBottom = document.createElement('div');
-  spacerBottom.style.height = 'calc(var(--ch, 44px) * 2)';
-  wheelContainer.appendChild(spacerBottom);
-
-  // Center highlight band
-  const centerBand = document.createElement('div');
-  centerBand.style.cssText = 'position:absolute;top:50%;left:0;right:0;height:var(--ch, 44px);'
-    +'border-top:1px solid var(--ac);border-bottom:1px solid var(--ac);pointer-events:none;'
-    +'opacity:0.3;z-index:1;transform:translateY(-50%)';
-  wheelContainer.appendChild(centerBand);
-
-  // Track scroll to determine centered option
-  const updateCenteredOption = () => {
-    const containerRect = wheelContainer.getBoundingClientRect();
-    const containerCenter = containerRect.height / 2;
-
-    options.forEach((opt, idx) => {
-      const optRect = opt.getBoundingClientRect();
-      const optCenter = optRect.top + optRect.height / 2 - containerRect.top;
-      const distance = Math.abs(optCenter - containerCenter);
-
-      if (distance < 30) {
-        // This option is centered
-        tempSelectedIndex = idx;
-        tempSelectedId = conditions[idx].conditionId;
-        opt.style.opacity = '1';
-        opt.style.fontWeight = '800';
-        opt.style.borderColor = 'var(--ac)';
-      } else {
-        opt.style.opacity = '0.6';
-        opt.style.fontWeight = '400';
-        opt.style.borderColor = 'transparent';
-      }
-    });
-  };
-
-  wheelContainer.addEventListener('scroll', updateCenteredOption, false);
 
   // Done button handler
   doneBtn.onclick = () => {
@@ -2663,22 +2622,24 @@ function psOpenConditionWheelForCurrent() {
       console.log('[COND] Selected: ' + cur._conditionDisplayName + ' (' + cur._conditionId + ')');
     }
     overlay.remove();
-    psRefreshConditionDisplay(); // Refresh the condition row
+    psRefreshConditionDisplay();
   };
 
   sheet.appendChild(header);
-  sheet.appendChild(wheelContainer);
+  sheet.appendChild(optionsContainer);
   overlay.appendChild(sheet);
   overlay.setAttribute('data-picker', '');
 
   document.body.appendChild(overlay);
 
-  // Auto-scroll to current selection if exists
+  // Auto-scroll to current selection
   if (tempSelectedIndex >= 0) {
     setTimeout(() => {
-      options[tempSelectedIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
-      updateCenteredOption();
-    }, 100);
+      options[tempSelectedIndex].scrollIntoView({
+        behavior: 'auto',
+        block: 'nearest'
+      });
+    }, 50);
   }
 }
 window.psOpenConditionWheelForCurrent = psOpenConditionWheelForCurrent;
