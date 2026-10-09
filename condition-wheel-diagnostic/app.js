@@ -97,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-09-condition-description-sync-v26';
+window.PS_BUILD = '2026-10-09-condition-content-final-v27';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -2457,10 +2457,8 @@ async function psLoadCategoryConditions(finalCategoryId) {
       cur._conditionId = cur._availableConditions[0].conditionId;
       cur._conditionDisplayName = cur._availableConditions[0].conditionDisplayName;
       console.log('[COND] Auto-selected only option: ' + cur._conditionDisplayName);
-      // [SYNC v22] Sanitize title for auto-selected condition
-      if (cur._selectedTitle) {
-        cur._selectedTitle = psSanitizeTitleForCondition(cur._selectedTitle, cur._conditionId);
-      }
+      // [SYNC v27] Apply full condition content sync
+      psApplyConditionContent(cur._conditionId);
     } else {
       // Multiple conditions available
       // First, check if a previous selection is still valid
@@ -2472,6 +2470,8 @@ async function psLoadCategoryConditions(finalCategoryId) {
       if (previousStillValid) {
         // Keep the previously selected condition
         console.log('[COND] Keeping previous selection: ' + cur._conditionDisplayName);
+        // [SYNC v27] Apply full condition content sync for kept selection
+        psApplyConditionContent(cur._conditionId);
       } else {
         // Previous selection not valid or none exists
         // Check if NEW (conditionId 1000) is available
@@ -2480,10 +2480,8 @@ async function psLoadCategoryConditions(finalCategoryId) {
           cur._conditionId = newCondition.conditionId;
           cur._conditionDisplayName = newCondition.conditionDisplayName;
           console.log('[COND] Auto-selected NEW: ' + cur._conditionDisplayName);
-          // [SYNC v22] Sanitize title for auto-selected New condition
-          if (cur._selectedTitle) {
-            cur._selectedTitle = psSanitizeTitleForCondition(cur._selectedTitle, 1000);
-          }
+          // [SYNC v27] Apply full condition content sync for auto-selected New
+          psApplyConditionContent(cur._conditionId);
         } else {
           // No NEW available, clear selection and let employee choose
           cur._conditionId = null;
@@ -2558,7 +2556,7 @@ function psSanitizeTitleForCondition(title, conditionId) {
 }
 window.psSanitizeTitleForCondition = psSanitizeTitleForCondition;
 
-// [SYNC v24] Add condition label to title to ensure condition is clear
+// [SYNC v27] Add condition label to title, preventing duplicates
 function psAddConditionLabelToTitle(title, conditionId) {
   if (!title || typeof title !== 'string') return title;
 
@@ -2573,9 +2571,12 @@ function psAddConditionLabelToTitle(title, conditionId) {
   const label = conditionLabels[conditionId];
   if (!label) return title;
 
-  // Check if condition label already in title
-  if (title.includes(label)) {
-    return title;
+  // Check if condition label already in title (case-insensitive)
+  const labelRegex = new RegExp('\\b' + label + '\\b', 'i');
+  if (labelRegex.test(title)) {
+    // Already has the label - remove duplicates to be safe
+    const cleanTitle = title.replace(new RegExp('\\b' + label + '\\b', 'gi'), label);
+    return cleanTitle.replace(/\s+/g, ' ').trim();
   }
 
   // Try to append condition label if space allows
@@ -2607,22 +2608,33 @@ function psAddConditionLabelToTitle(title, conditionId) {
 }
 window.psAddConditionLabelToTitle = psAddConditionLabelToTitle;
 
-// [SYNC v25] Remove contradictory condition language from description fields
+// [SYNC v27] Remove contradictory condition language using clause-aware normalization
 function psNormalizeDescriptionForCondition(text, conditionId) {
   if (!text || typeof text !== 'string') return text;
   if (conditionId === 1000) return text; // New condition - keep as-is
 
-  // For non-New conditions, remove contradictory "New" claims
-  let normalized = text
-    .replace(/\bbrand[\s-]*new\b/gi, '')
-    .replace(/\bfactory[\s-]*sealed\b/gi, '')
-    .replace(/\bnew\s+in\s+(?:box|packaging)/gi, '')
-    .replace(/\bnew\s+item\b/gi, '')
-    .replace(/\b(?:never\s+)?unopened\b/gi, '')
-    .replace(/\bunused\b/gi, '')
-    .replace(/\boriginal\s+(?:packaging|box)/gi, '');
+  // For non-New conditions, remove SENTENCES containing contradictory New-condition claims
+  // Pattern: sentence containing brand new, factory-sealed, unopened, unused, original packaging, etc.
+  const newConditionPatterns = [
+    /[^.!?]*\bbrand[\s-]*new\b[^.!?]*[.!?]/gi,
+    /[^.!?]*\bfactory[\s-]*sealed\b[^.!?]*[.!?]/gi,
+    /[^.!?]*\bnew\s+in\s+(?:box|packaging)\b[^.!?]*[.!?]/gi,
+    /[^.!?]*\bnew\s+item\b[^.!?]*[.!?]/gi,
+    /[^.!?]*\b(?:never\s+)?unopened\b[^.!?]*[.!?]/gi,
+    /[^.!?]*\bunused\b[^.!?]*[.!?]/gi,
+    /[^.!?]*\boriginal\s+(?:packaging|box|manufacturer\s+packaging)\b[^.!?]*[.!?]/gi,
+    /[^.!?]*\bmanufacturer[\s-]*(?:sealed|packaging)\b[^.!?]*[.!?]/gi
+  ];
 
-  return normalized.replace(/\s+/g, ' ').trim();
+  let normalized = text;
+  newConditionPatterns.forEach(pattern => {
+    normalized = normalized.replace(pattern, ' ');
+  });
+
+  // Clean up: remove multiple spaces, trim
+  normalized = normalized.replace(/\s+/g, ' ').trim();
+
+  return normalized;
 }
 
 // [SYNC v25] Rebuild description from clean base + current condition
@@ -2660,6 +2672,71 @@ function psRebuildDescriptionForCondition(baseDescription, conditionId) {
   return rebuilt;
 }
 window.psRebuildDescriptionForCondition = psRebuildDescriptionForCondition;
+
+// [SYNC v27] Single reusable function to apply condition content to current product
+function psApplyConditionContent(conditionId) {
+  if (!cur) return;
+
+  // Update condition state
+  const matchingCondition = cur._availableConditions && cur._availableConditions.find(c => c.conditionId === conditionId);
+  if (matchingCondition) {
+    cur._conditionId = conditionId;
+    cur._conditionDisplayName = matchingCondition.conditionDisplayName;
+    console.log('[COND-CONTENT v27] Applied condition: ' + cur._conditionDisplayName + ' (' + conditionId + ')');
+  }
+
+  // Get the current effective title
+  const titleDisplay = document.getElementById('pack-title-display');
+  const currentEffectiveTitle = cur._selectedTitle || (titleDisplay && titleDisplay.dataset.val) || cur.title || '';
+
+  if (currentEffectiveTitle) {
+    // TITLE: Sanitize + Add condition label (with duplicate prevention)
+    let finalTitle = psSanitizeTitleForCondition(currentEffectiveTitle, conditionId);
+    finalTitle = psAddConditionLabelToTitle(finalTitle, conditionId);
+    console.log('[COND-CONTENT v27] Title: "' + currentEffectiveTitle + '" → "' + finalTitle + '"');
+
+    // Synchronize ALL title sources
+    cur.title = finalTitle;
+    cur._selectedTitle = finalTitle;
+
+    // Update visible DOM for title
+    if (titleDisplay) {
+      titleDisplay.textContent = finalTitle;
+      titleDisplay.dataset.val = finalTitle;
+    }
+
+    // Update title edit textarea
+    const titleInput = document.getElementById('pack-title-input');
+    if (titleInput) titleInput.value = finalTitle;
+
+    // Update title character count
+    const charCount = document.getElementById('title-char-count');
+    if (charCount) charCount.textContent = (finalTitle || '').length + '/80 chars';
+
+    // Prevent packState from overwriting with stale baseTitle
+    if (window._packState && window._packState.baseTitle) {
+      window._packState.baseTitle = finalTitle;
+    }
+  }
+
+  // DESCRIPTION: Rebuild from clean base with current condition
+  if (cur._description) {
+    // Use clean base for rebuild to avoid carryover
+    const baseDesc = cur._conditionBaseDescription || cur._description;
+    const rebuiltDesc = psRebuildDescriptionForCondition(baseDesc, conditionId);
+    cur._description = rebuiltDesc;
+
+    // Update visible description DOM immediately
+    const descResult = document.getElementById('ps-desc-result');
+    if (descResult) {
+      descResult.innerHTML = renderDescriptionHTML(rebuiltDesc);
+      console.log('[COND-CONTENT v27] Description rebuilt for condition ' + conditionId);
+    }
+  }
+
+  console.log('[COND-CONTENT v27] All condition content synchronized');
+}
+window.psApplyConditionContent = psApplyConditionContent;
 
 // Open condition wheel picker for CURRENT PRODUCT (before adding to bulk)
 // [FIX v21] iOS-safe picker: robust tappable rows, no transforms, no clipping
@@ -2776,71 +2853,12 @@ function psOpenConditionWheelForCurrent() {
     options[0].style.color = 'var(--ac)';
   }
 
-  // Done button handler
+  // Done button handler - uses single reusable psApplyConditionContent function
   doneBtn.onclick = () => {
     if (tempSelectedIndex >= 0 && tempSelectedIndex < conditions.length) {
       const selected = conditions[tempSelectedIndex];
-      cur._conditionId = selected.conditionId;
-      cur._conditionDisplayName = selected.conditionDisplayName;
-      console.log('[COND] Selected: ' + cur._conditionDisplayName + ' (' + cur._conditionId + ')');
-
-      // [SYNC v24] Synchronize ALL condition-related content: title + description
-      // Get the current effective title (prioritize visible/edited sources over stale ones)
-      const titleDisplay = document.getElementById('pack-title-display');
-      const currentEffectiveTitle = cur._selectedTitle ||
-                                   (titleDisplay && titleDisplay.dataset.val) ||
-                                   cur.title || '';
-
-      if (currentEffectiveTitle) {
-        // ── TITLE: Sanitize + Add condition label ──
-        let finalTitle = psSanitizeTitleForCondition(currentEffectiveTitle, selected.conditionId);
-        finalTitle = psAddConditionLabelToTitle(finalTitle, selected.conditionId);
-        console.log('[COND-CONTENT v24] Title: "' + currentEffectiveTitle + '" → "' + finalTitle + '"');
-
-        // Synchronize ALL title sources (single source of truth)
-        cur.title = finalTitle;
-        cur._selectedTitle = finalTitle;
-
-        // Update visible DOM for title
-        if (titleDisplay) {
-          titleDisplay.textContent = finalTitle;
-          titleDisplay.dataset.val = finalTitle;
-        }
-
-        // Update title edit textarea
-        const titleInput = document.getElementById('pack-title-input');
-        if (titleInput) titleInput.value = finalTitle;
-
-        // Update title character count
-        const charCount = document.getElementById('title-char-count');
-        if (charCount) charCount.textContent = (finalTitle || '').length + '/80 chars';
-
-        // Prevent packState from overwriting with stale baseTitle
-        if (window._packState && window._packState.baseTitle) {
-          window._packState.baseTitle = finalTitle;
-        }
-      }
-
-      // ── DESCRIPTION: Rebuild from clean base with current condition ──
-      if (cur._description) {
-        // [SYNC v25] Use clean base for rebuild to avoid carryover
-        const baseDesc = cur._conditionBaseDescription || cur._description;
-
-        // Rebuild description from clean base
-        const rebuiltDesc = psRebuildDescriptionForCondition(baseDesc, selected.conditionId);
-
-        // Store rebuilt description (will be used in CSV/bulk)
-        cur._description = rebuiltDesc;
-
-        // Update visible description DOM immediately
-        const descResult = document.getElementById('ps-desc-result');
-        if (descResult) {
-          descResult.innerHTML = renderDescriptionHTML(rebuiltDesc);
-          console.log('[COND-CONTENT v25] Description rebuilt from clean base for condition ' + selected.conditionId);
-        }
-      }
-
-      console.log('[COND-CONTENT v25] All condition content synchronized');
+      console.log('[COND] Selected: ' + selected.conditionDisplayName + ' (' + selected.conditionId + ')');
+      psApplyConditionContent(selected.conditionId);
     }
     overlay.remove();
     psRefreshConditionDisplay();
