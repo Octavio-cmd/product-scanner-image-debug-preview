@@ -97,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-09-condition-picker-ios-fix-v21';
+window.PS_BUILD = '2026-10-09-condition-title-sync-v22';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -2457,6 +2457,10 @@ async function psLoadCategoryConditions(finalCategoryId) {
       cur._conditionId = cur._availableConditions[0].conditionId;
       cur._conditionDisplayName = cur._availableConditions[0].conditionDisplayName;
       console.log('[COND] Auto-selected only option: ' + cur._conditionDisplayName);
+      // [SYNC v22] Sanitize title for auto-selected condition
+      if (cur._selectedTitle) {
+        cur._selectedTitle = psSanitizeTitleForCondition(cur._selectedTitle, cur._conditionId);
+      }
     } else {
       // Multiple conditions available
       // First, check if a previous selection is still valid
@@ -2476,6 +2480,10 @@ async function psLoadCategoryConditions(finalCategoryId) {
           cur._conditionId = newCondition.conditionId;
           cur._conditionDisplayName = newCondition.conditionDisplayName;
           console.log('[COND] Auto-selected NEW: ' + cur._conditionDisplayName);
+          // [SYNC v22] Sanitize title for auto-selected New condition
+          if (cur._selectedTitle) {
+            cur._selectedTitle = psSanitizeTitleForCondition(cur._selectedTitle, 1000);
+          }
         } else {
           // No NEW available, clear selection and let employee choose
           cur._conditionId = null;
@@ -2497,6 +2505,58 @@ async function psLoadCategoryConditions(finalCategoryId) {
   }
 }
 window.psLoadCategoryConditions = psLoadCategoryConditions;
+
+// [SYNC v22] Sanitize title based on selected condition to remove contradictions
+function psSanitizeTitleForCondition(title, conditionId) {
+  if (!title || typeof title !== 'string') return title;
+
+  const condTerms = {
+    new: ['Used', 'Pre-Owned', 'Open Box', 'Open box', 'For Parts', 'Parts Only', 'Seller Refurbished', 'Refurbished'],
+    openBox: ['New', 'Brand New', 'Used', 'Pre-Owned', 'For Parts', 'Parts Only', 'Refurbished', 'Seller Refurbished'],
+    refurbished: ['New', 'Brand New', 'Open Box', 'Open box', 'Used', 'Pre-Owned', 'For Parts', 'Parts Only'],
+    used: ['New', 'Brand New', 'Open Box', 'Open box', 'Seller Refurbished', 'Refurbished', 'For Parts', 'Parts Only'],
+    forParts: ['New', 'Brand New', 'Open Box', 'Open box', 'Used', 'Pre-Owned', 'Seller Refurbished', 'Refurbished']
+  };
+
+  let termsToRemove = [];
+  switch(conditionId) {
+    case 1000: // New
+      termsToRemove = condTerms.new;
+      break;
+    case 1500: // Open box
+      termsToRemove = condTerms.openBox;
+      break;
+    case 2500: // Seller refurbished
+      termsToRemove = condTerms.refurbished;
+      break;
+    case 3000: // Used
+      termsToRemove = condTerms.used;
+      break;
+    case 7000: // For parts or not working
+      termsToRemove = condTerms.forParts;
+      break;
+    default:
+      return title;
+  }
+
+  // Remove contradictory terms from title
+  let sanitized = title;
+  termsToRemove.forEach(term => {
+    const regex = new RegExp('\\b' + term + '\\b', 'gi');
+    sanitized = sanitized.replace(regex, '');
+  });
+
+  // Clean up extra spaces
+  sanitized = sanitized.replace(/\s+/g, ' ').trim();
+
+  // Preserve 80 char limit
+  if (sanitized.length > 80) {
+    sanitized = sanitized.substring(0, 80).trim();
+  }
+
+  return sanitized;
+}
+window.psSanitizeTitleForCondition = psSanitizeTitleForCondition;
 
 // Open condition wheel picker for CURRENT PRODUCT (before adding to bulk)
 // [FIX v21] iOS-safe picker: robust tappable rows, no transforms, no clipping
@@ -2620,6 +2680,15 @@ function psOpenConditionWheelForCurrent() {
       cur._conditionId = selected.conditionId;
       cur._conditionDisplayName = selected.conditionDisplayName;
       console.log('[COND] Selected: ' + cur._conditionDisplayName + ' (' + cur._conditionId + ')');
+
+      // [SYNC v22] Sanitize title to remove contradictory condition words
+      if (cur._selectedTitle) {
+        cur._selectedTitle = psSanitizeTitleForCondition(cur._selectedTitle, selected.conditionId);
+        console.log('[COND-TITLE] Sanitized title: ' + cur._selectedTitle);
+        // Update the title input if visible
+        const titleInput = document.getElementById('pack-title-input');
+        if (titleInput) titleInput.value = cur._selectedTitle;
+      }
     }
     overlay.remove();
     psRefreshConditionDisplay();
@@ -8210,6 +8279,11 @@ async function exportCSV(){
     else if (/\bcentrum\b/.test(titleLower)) { brandFix = 'Centrum'; }
 
     var cleanTitle = psFixTitleCase((it.title||'').replace(/[\u{1F300}-\u{1FFFF}\u{2600}-\u{27FF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FEFF}✳️⭐🔥💊📦✅❌⚠️🌟💰📊🏷️]/gu, '').replace(/\s+/g,' ').trim(), it.brand).substring(0,80);
+
+    // [SYNC v22] Final title sanitization before CSV export — ensure condition consistency
+    if (it.conditionId) {
+      cleanTitle = psSanitizeTitleForCondition(cleanTitle, it.conditionId);
+    }
 
     // Model — required for Electronics & Appliances
     // ── Precedencia: structured specifics → title regex → "Does Not Apply"
