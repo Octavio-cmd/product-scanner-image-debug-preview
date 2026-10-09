@@ -97,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-09-condition-content-sync-v24';
+window.PS_BUILD = '2026-10-09-condition-description-sync-v25';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -2607,10 +2607,41 @@ function psAddConditionLabelToTitle(title, conditionId) {
 }
 window.psAddConditionLabelToTitle = psAddConditionLabelToTitle;
 
-// [SYNC v24] Add CONDITION section near top of description
-function psAddConditionSectionToDescription(descriptionObj, conditionId) {
-  if (!descriptionObj || typeof descriptionObj !== 'object') return descriptionObj;
+// [SYNC v25] Remove contradictory condition language from description fields
+function psNormalizeDescriptionForCondition(text, conditionId) {
+  if (!text || typeof text !== 'string') return text;
+  if (conditionId === 1000) return text; // New condition - keep as-is
 
+  // For non-New conditions, remove contradictory "New" claims
+  let normalized = text
+    .replace(/\bbrand[\s-]*new\b/gi, '')
+    .replace(/\bfactory[\s-]*sealed\b/gi, '')
+    .replace(/\bnew\s+in\s+(?:box|packaging)/gi, '')
+    .replace(/\bnew\s+item\b/gi, '')
+    .replace(/\b(?:never\s+)?unopened\b/gi, '')
+    .replace(/\bunused\b/gi, '')
+    .replace(/\boriginal\s+(?:packaging|box)/gi, '');
+
+  return normalized.replace(/\s+/g, ' ').trim();
+}
+
+// [SYNC v25] Rebuild description from clean base + current condition
+function psRebuildDescriptionForCondition(baseDescription, conditionId) {
+  if (!baseDescription || typeof baseDescription !== 'object') return baseDescription;
+
+  // Clone to avoid mutation
+  const rebuilt = {
+    intro: baseDescription.intro ? psNormalizeDescriptionForCondition(baseDescription.intro, conditionId) : '',
+    benefits: Array.isArray(baseDescription.benefits)
+      ? baseDescription.benefits.map(b => psNormalizeDescriptionForCondition(String(b), conditionId))
+      : [],
+    package_contents: baseDescription.package_contents
+      ? psNormalizeDescriptionForCondition(baseDescription.package_contents, conditionId)
+      : '',
+    disclaimer: baseDescription.disclaimer || ''
+  };
+
+  // Prepend CONDITION section based on condition
   const conditionSections = {
     1000: 'New',
     1500: 'Open Box\nPlease review the photos for the exact packaging condition and included accessories.',
@@ -2620,27 +2651,13 @@ function psAddConditionSectionToDescription(descriptionObj, conditionId) {
   };
 
   const conditionText = conditionSections[conditionId];
-  if (!conditionText) return descriptionObj;
-
-  // Clone the description object to avoid mutating original
-  const updated = Object.assign({}, descriptionObj);
-
-  // Build condition section (add at beginning of intro)
-  const conditionSection = 'CONDITION:\n' + conditionText + '\n\n';
-
-  // Check if CONDITION section already exists
-  if (updated.intro && updated.intro.includes('CONDITION:')) {
-    // Replace existing CONDITION section
-    const regex = /CONDITION:[\s\S]*?(?=\n\n(?![^\n])|\Z)/;
-    updated.intro = updated.intro.replace(regex, conditionSection.trim());
-  } else {
-    // Prepend new CONDITION section
-    updated.intro = conditionSection + (updated.intro || '');
+  if (conditionText) {
+    rebuilt.intro = 'CONDITION:\n' + conditionText + '\n\n' + rebuilt.intro;
   }
 
-  return updated;
+  return rebuilt;
 }
-window.psAddConditionSectionToDescription = psAddConditionSectionToDescription;
+window.psRebuildDescriptionForCondition = psRebuildDescriptionForCondition;
 
 // Open condition wheel picker for CURRENT PRODUCT (before adding to bulk)
 // [FIX v21] iOS-safe picker: robust tappable rows, no transforms, no clipping
@@ -2802,20 +2819,26 @@ function psOpenConditionWheelForCurrent() {
         }
       }
 
-      // ── DESCRIPTION: Add CONDITION section near top ──
+      // ── DESCRIPTION: Rebuild from clean base with current condition ──
       if (cur._description) {
-        const updatedDesc = psAddConditionSectionToDescription(cur._description, selected.conditionId);
-        cur._description = updatedDesc;
+        // [SYNC v25] Use clean base for rebuild to avoid carryover
+        const baseDesc = cur._conditionBaseDescription || cur._description;
 
-        // Update visible description DOM
+        // Rebuild description from clean base
+        const rebuiltDesc = psRebuildDescriptionForCondition(baseDesc, selected.conditionId);
+
+        // Store rebuilt description (will be used in CSV/bulk)
+        cur._description = rebuiltDesc;
+
+        // Update visible description DOM immediately
         const descResult = document.getElementById('ps-desc-result');
         if (descResult) {
-          descResult.innerHTML = renderDescriptionHTML(updatedDesc);
-          console.log('[COND-CONTENT v24] Description updated with CONDITION section');
+          descResult.innerHTML = renderDescriptionHTML(rebuiltDesc);
+          console.log('[COND-CONTENT v25] Description rebuilt from clean base for condition ' + selected.conditionId);
         }
       }
 
-      console.log('[COND-CONTENT v24] All condition content synchronized');
+      console.log('[COND-CONTENT v25] All condition content synchronized');
     }
     overlay.remove();
     psRefreshConditionDisplay();
@@ -5668,6 +5691,8 @@ Rules:
       package_contents: _fixPluralEcho(parsed.package_contents || ''),
       disclaimer: PS_DESC_DISCLAIMER
     };
+    // [SYNC v25] Capture condition-free base for later rebuilds
+    cur._conditionBaseDescription = JSON.parse(JSON.stringify(cur._description));
     if(out) out.innerHTML = renderDescriptionHTML(cur._description);
   }catch(err){
     console.error('psAutoGenerateDescription error:', err);
@@ -7409,12 +7434,15 @@ function buildLocalFallbackDescription(curObj, packs) {
   if (specs['Formulation']) benefits.push('Formulation: ' + specs['Formulation']);
   if (specs['Suitable For'] || specs['Hair Type']) benefits.push('Suitable for: ' + (specs['Suitable For'] || specs['Hair Type']));
   if (!benefits.length) benefits = ['Brand new, factory-sealed', 'Fast shipping from our North Carolina warehouse', '100% authentic, original manufacturer packaging'];
-  return {
+  var desc = {
     intro: (brand ? brand + ' — ' : '') + (title || 'Quality product') + '. Brand new and factory sealed.',
     benefits: benefits,
     package_contents: 'This listing includes ' + packs + ' unit' + (packs>1?'s':'') + ', brand new and factory-sealed.',
     disclaimer: PS_DESC_DISCLAIMER
   };
+  // [SYNC v25] Also store as clean base for condition rebuilds
+  if (curObj) curObj._conditionBaseDescription = JSON.parse(JSON.stringify(desc));
+  return desc;
 }
 
 function descForPack(desc, packs) {
