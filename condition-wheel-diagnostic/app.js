@@ -97,7 +97,7 @@
 // Abre la consola de debug (5 toques al logo) y confirma esta línea antes de
 // dar por buena cualquier prueba. Si no coincide, el iPhone está cacheado.
 var _psSbInvVacio = {};
-window.PS_BUILD = '2026-10-09-condition-content-final-v28';
+window.PS_BUILD = '2026-10-09-condition-content-final-v28-1';
 try {
   console.log('[Savvy Scanner] build ' + window.PS_BUILD);
   window.addEventListener('load', function(){
@@ -4099,6 +4099,8 @@ async function addBulk() {
     // con bullets (nunca la oración plana de 1 línea).
     if (cur && !cur._description) {
       cur._description = buildLocalFallbackDescription(cur, cur.packSize || 1);
+      // [SYNC v28.1] Capture clean base for fallback description before reapplying condition
+      cur._conditionBaseDescription = JSON.parse(JSON.stringify(cur._description));
       // [SYNC v28] If condition was already auto-selected, reapply to fallback description
       if (cur._conditionId) {
         psApplyConditionContent(cur._conditionId);
@@ -4942,6 +4944,8 @@ async function addSplitPacksToCSV(){
     }
     if (cur && !cur._description) {
       cur._description = buildLocalFallbackDescription(cur, cur.packSize || 1);
+      // [SYNC v28.1] Capture clean base for fallback description before reapplying condition
+      cur._conditionBaseDescription = JSON.parse(JSON.stringify(cur._description));
       // [SYNC v28] If condition was already auto-selected, reapply to fallback description
       if (cur._conditionId) {
         psApplyConditionContent(cur._conditionId);
@@ -7285,6 +7289,8 @@ async function psSendToShopify() {
     }
     if (cur && !cur._description) {
       cur._description = buildLocalFallbackDescription(cur, cur.packSize || 1);
+      // [SYNC v28.1] Capture clean base for fallback description before reapplying condition
+      cur._conditionBaseDescription = JSON.parse(JSON.stringify(cur._description));
       // [SYNC v28] If condition was already auto-selected, reapply to fallback description
       if (cur._conditionId) {
         psApplyConditionContent(cur._conditionId);
